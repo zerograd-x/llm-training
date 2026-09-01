@@ -2,7 +2,16 @@ import pytest
 import torch
 from torch.utils.data import Dataset
 
-from llm_training import CheckpointConfig, OptimizerConfig, SchedulerConfig, Trainer, TrainingConfig, load_causal_lm
+from llm_training import (
+    CheckpointConfig,
+    DefaultCrossEntropyLoss,
+    OptimizerConfig,
+    SchedulerConfig,
+    Trainer,
+    TrainingConfig,
+    load_causal_lm,
+    shift_causal_labels,
+)
 
 
 class TensorRows(Dataset):
@@ -32,6 +41,16 @@ def test_real_hf_model_trains_one_step(tmp_path) -> None:
     )
     labels = encoded["input_ids"].clone()
     labels[encoded["attention_mask"] == 0] = -100
+
+    components.model.eval()
+    with torch.no_grad():
+        internal_loss = components.model(**encoded, labels=labels).loss
+        outputs = components.model(**encoded)
+        external_loss = DefaultCrossEntropyLoss()(
+            outputs.logits,
+            shift_causal_labels(labels),
+        )
+    torch.testing.assert_close(external_loss, internal_loss.float())
 
     rows = []
     for index in range(encoded["input_ids"].shape[0]):

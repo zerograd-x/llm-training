@@ -22,6 +22,7 @@ from .checkpoint import (
     save_training_checkpoint,
 )
 from .config import TrainingConfig
+from .loss import BaseLoss, load_loss, shift_causal_labels, validate_loss
 from .model import save_causal_lm
 from .optimizer import build_adamw
 from .scheduler import build_scheduler
@@ -48,7 +49,7 @@ class EpochSeededRandomSampler(Sampler[int]):
 
 
 class Trainer:
-    """A small training loop with checkpoint/resume as a first-class behavior."""
+    """A small causal-LM training loop with checkpoint/resume support."""
 
     def __init__(
         self,
@@ -60,9 +61,17 @@ class Trainer:
         tokenizer: PreTrainedTokenizerBase | None = None,
         optimizer: Optimizer | None = None,
         scheduler: LRScheduler | None = None,
+        loss_fn: BaseLoss | None = None,
     ) -> None:
         config.validate()
         set_seed(config.seed)
+
+        if loss_fn is not None and (
+            config.loss.module_path is not None or config.loss.kwargs
+        ):
+            raise ValueError(
+                "Specify either Trainer(loss_fn=...) or config.loss, not both"
+            )
 
         self.config = config
         self.tokenizer = tokenizer
@@ -70,6 +79,11 @@ class Trainer:
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             mixed_precision=config.mixed_precision,
         )
+        self.loss_fn = validate_loss(loss_fn) if loss_fn is not None else load_loss(
+            config.loss.module_path,
+            config.loss.kwargs,
+        )
+        self.loss_fn.to(self.accelerator.device)
 
         self._sampler = EpochSeededRandomSampler(train_dataset, seed=config.seed)
         dataloader = DataLoader(
@@ -122,10 +136,26 @@ class Trainer:
 
             for batch_index, batch in enumerate(epoch_loader, start=start_batch):
                 with self.accelerator.accumulate(self.model):
-                    outputs = self.model(**batch)
-                    loss = outputs.loss
-                    if loss is None:
-                        raise ValueError("Model forward returned loss=None")
+                    if "labels" not in batch:
+                        raise KeyError("Training batch must contain labels")
+                    labels = batch["labels"]
+                    model_inputs = {
+                        key: value for key, value in batch.items() if key != "labels"
+                    }
+
+                    outputs = self.model(**model_inputs)
+                    logits = getattr(outputs, "logits", None)
+                    if logits is None:
+                        raise ValueError("Model forward must return logits")
+
+                    loss = self.loss_fn(logits, shift_causal_labels(labels))
+                    if loss.ndim != 0:
+                        raise ValueError("loss_fn must return a scalar tensor")
+                    if not bool(torch.isfinite(loss.detach()).item()):
+                        raise FloatingPointError(
+                            f"Non-finite loss before backward: {loss.detach().item()}"
+                        )
+
                     self.accelerator.backward(loss)
 
                     if (

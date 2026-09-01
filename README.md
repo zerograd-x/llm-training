@@ -5,7 +5,7 @@ A small, opinionated training runtime for causal language models.
 The project is intentionally split from [`llm-training-data`](https://github.com/zerograd-x/llm-training-data):
 
 - **llm-training-data** owns rendering, tokenization, label construction, padding, and sequence packing.
-- **llm-training** owns model loading, trainable-parameter policy, optimization, checkpoint/resume, and the training loop.
+- **llm-training** owns model loading, trainable-parameter policy, optimization, loss computation, checkpoint/resume, and the training loop.
 - **model-artifact-transfer** can publish completed model artifacts after training.
 
 Dependency direction is one-way: `llm-training` may consume `llm-training-data`; `llm-training-data` must not depend on this package.
@@ -17,12 +17,13 @@ The first version focuses on one golden path:
 - Hugging Face decoder-only causal LMs
 - PyTorch + Hugging Face Accelerate
 - full fine-tuning or selective layer freezing
+- configurable causal-LM loss with a default masked cross-entropy implementation
 - AdamW + Hugging Face schedulers
 - deterministic epoch sampling
 - checkpoint/save/resume of model, optimizer, scheduler, RNG, and trainer position
 - a thin adapter for `llm-training-data` column-batch collators
 
-Not in the core: Ray, serving, vLLM, Spark, retrieval, semantic IDs, constrained decoding, or MTP.
+Serving, data-processing systems, domain-specific model wrappers, and other application-specific extensions stay outside the core runtime.
 
 ## Install
 
@@ -47,7 +48,7 @@ llm-training-data
     |
     v
 llm-training
-(model/freeze/optimizer/scheduler/train/checkpoint)
+(model/freeze/loss/optimizer/scheduler/train/checkpoint)
     |
     v
 trained checkpoint
@@ -86,6 +87,60 @@ trainer = Trainer(
 )
 trainer.train()
 ```
+
+## Custom losses
+
+The trainer owns causal next-token alignment. A loss implementation therefore receives position-aligned `logits` and `labels`; labels equal to `-100` are unsupervised and must not contribute to the loss or its reduction denominator.
+
+The default implementation is `DefaultCrossEntropyLoss`, which computes cross-entropy in float32 even when model logits use a lower-precision dtype.
+
+For Python-native customization, subclass `BaseLoss` and inject an instance directly:
+
+```python
+import torch
+from torch.nn import functional as F
+
+from llm_training import BaseLoss, Trainer
+
+
+class FocalLoss(BaseLoss):
+    def __init__(self, gamma: float = 2.0) -> None:
+        super().__init__()
+        self.gamma = gamma
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        flat_logits = logits.float().reshape(-1, logits.size(-1))
+        flat_labels = labels.reshape(-1)
+        keep = flat_labels != -100
+        flat_logits = flat_logits[keep]
+        flat_labels = flat_labels[keep]
+        logp = F.log_softmax(flat_logits, dim=-1)
+        logp = logp.gather(1, flat_labels[:, None]).squeeze(1)
+        p = logp.exp()
+        return -((1 - p) ** self.gamma * logp).mean()
+
+
+trainer = Trainer(
+    ...,
+    loss_fn=FocalLoss(gamma=2.0),
+)
+```
+
+A custom loss can also be selected from configuration with a dotted import path:
+
+```python
+from llm_training import LossConfig, TrainingConfig
+
+config = TrainingConfig(
+    output_dir="./outputs",
+    loss=LossConfig(
+        module_path="my_project.losses.FocalLoss",
+        kwargs={"gamma": 2.0},
+    ),
+)
+```
+
+Use either `Trainer(loss_fn=...)` or `TrainingConfig.loss`, not both. Loss modules must not contain trainable parameters; trainable objective components belong on the model so distributed/sharded training backends can manage them with the rest of the model state.
 
 ## Checkpoint semantics
 

@@ -7,12 +7,20 @@ from .checkpoint import (
 from .config import (
     CheckpointConfig,
     FreezeConfig,
+    LossConfig,
     OptimizerConfig,
     SchedulerConfig,
     TrainingConfig,
 )
 from .data import adapt_column_batch_collator, rows_to_column_batch
 from .freeze import FreezeSummary, apply_freeze_policy, summarize_trainable_parameters
+from .loss import (
+    IGNORE_INDEX,
+    BaseLoss,
+    DefaultCrossEntropyLoss,
+    load_loss,
+    shift_causal_labels,
+)
 from .model import CausalLMComponents, load_causal_lm, save_causal_lm
 from .model_introspection import (
     find_embedding,
@@ -23,10 +31,14 @@ from .model_introspection import (
 from .trainer import Trainer
 
 __all__ = [
+    "BaseLoss",
     "CausalLMComponents",
     "CheckpointConfig",
+    "DefaultCrossEntropyLoss",
     "FreezeConfig",
     "FreezeSummary",
+    "IGNORE_INDEX",
+    "LossConfig",
     "OptimizerConfig",
     "SchedulerConfig",
     "Trainer",
@@ -39,10 +51,12 @@ __all__ = [
     "find_lm_head",
     "find_transformer_layers",
     "load_causal_lm",
+    "load_loss",
     "load_training_checkpoint",
     "rows_to_column_batch",
     "save_causal_lm",
     "save_training_checkpoint",
+    "shift_causal_labels",
     "summarize_trainable_parameters",
     "weights_are_tied",
 ]

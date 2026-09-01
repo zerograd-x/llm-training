@@ -28,4 +28,5 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
   "integration: downloads and runs a real external model",
+  "gpu: requires a CUDA GPU",
 ]

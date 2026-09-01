@@ -106,13 +106,13 @@ checkpoint-00001000/
 Run unit tests with:
 
 ```bash
-pytest -m "not integration"
+pytest -m "not integration and not gpu"
 ```
 
-Run real Hugging Face integration tests with:
+Run real Hugging Face CPU integration tests with:
 
 ```bash
-pytest -m integration tests/integration
+pytest -m "integration and not gpu" tests/integration
 ```
 
 The checkpoint-resume integration test deliberately interrupts training after the first optimizer step, creates a fresh model and `Trainer`, resumes from `latest`, restores the saved model state and trainer position, skips the already-completed batch, and finishes the second optimizer step.
@@ -123,3 +123,5 @@ The `llm-training-data` bridge test uses the real `build_sft_collator` from the 
 pip install -e ../llm-training-data
 pytest -m integration tests/integration/test_training_data_bridge.py
 ```
+
+GPU tests are intentionally excluded from normal push/PR CI. For the manual AWS single-GPU BF16 validation path, including EC2 quota, DLAMI, SSM, GPU checks, troubleshooting, and cleanup, see [`docs/aws-gpu-smoke.md`](docs/aws-gpu-smoke.md).

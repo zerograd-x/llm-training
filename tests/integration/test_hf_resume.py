@@ -31,17 +31,14 @@ class IntentionalInterruption(RuntimeError):
     pass
 
 
-class FailOnSecondBatch:
-    """Let step 1 finish and checkpoint, then simulate a training-job failure."""
+class InterruptAfterFirstCheckpointTrainer(Trainer):
+    """Simulate a job failure immediately after checkpoint 1 is durable."""
 
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def __call__(self, rows):
-        self.calls += 1
-        if self.calls == 2:
-            raise IntentionalInterruption("simulated worker failure after the first step")
-        return stack_collator(rows)
+    def save_checkpoint(self):
+        checkpoint_dir = super().save_checkpoint()
+        if self.state.global_step == 1:
+            raise IntentionalInterruption("simulated job failure after checkpoint 1")
+        return checkpoint_dir
 
 
 def build_rows(tokenizer):
@@ -99,11 +96,11 @@ def test_real_hf_training_resumes_mid_epoch(tmp_path) -> None:
     first = load_causal_lm("sshleifer/tiny-gpt2")
     rows = build_rows(first.tokenizer)
 
-    interrupted = Trainer(
+    interrupted = InterruptAfterFirstCheckpointTrainer(
         model=first.model,
         tokenizer=first.tokenizer,
         train_dataset=TensorRows(rows),
-        collate_fn=FailOnSecondBatch(),
+        collate_fn=stack_collator,
         config=build_config(tmp_path),
     )
 

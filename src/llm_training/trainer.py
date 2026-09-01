@@ -192,17 +192,4 @@ class Trainer:
             self.tokenizer,
             destination,
             accelerator=self.accelerator,
-        ) if self.tokenizer is not None else self._save_model_without_tokenizer(destination)
-
-    def _save_model_without_tokenizer(self, destination: Path) -> None:
-        self.accelerator.wait_for_everyone()
-        unwrapped = self.accelerator.unwrap_model(self.model)
-        if not hasattr(unwrapped, "save_pretrained"):
-            raise TypeError("Model does not implement save_pretrained")
-        unwrapped.save_pretrained(
-            destination,
-            is_main_process=self.accelerator.is_main_process,
-            save_function=self.accelerator.save,
-            safe_serialization=True,
         )
-        self.accelerator.wait_for_everyone()

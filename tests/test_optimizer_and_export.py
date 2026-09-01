@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import torch
 from torch import nn
 
 from llm_training import OptimizerConfig, save_causal_lm
@@ -33,7 +34,7 @@ def test_adamw_uses_one_group_with_trainable_parameters_only() -> None:
 class SaveableModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.weight = nn.Parameter(nn.init.ones_(nn.Parameter(nn.empty(1))))
+        self.weight = nn.Parameter(torch.ones(1))
 
     def save_pretrained(self, output_dir, **kwargs) -> None:
         output_dir = Path(output_dir)

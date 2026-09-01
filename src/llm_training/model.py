@@ -41,18 +41,19 @@ def load_causal_lm(
 
 def save_causal_lm(
     model: PreTrainedModel,
-    tokenizer: PreTrainedTokenizerBase,
+    tokenizer: PreTrainedTokenizerBase | None,
     output_dir: str | Path,
     *,
     accelerator: Accelerator | None = None,
 ) -> None:
-    """Export model weights and tokenizer in ordinary Hugging Face format."""
+    """Export model weights and optional tokenizer in Hugging Face format."""
 
     output_dir = Path(output_dir)
     if accelerator is None:
         output_dir.mkdir(parents=True, exist_ok=True)
         model.save_pretrained(output_dir, safe_serialization=True)
-        tokenizer.save_pretrained(output_dir)
+        if tokenizer is not None:
+            tokenizer.save_pretrained(output_dir)
         return
 
     accelerator.wait_for_everyone()
@@ -63,6 +64,6 @@ def save_causal_lm(
         save_function=accelerator.save,
         safe_serialization=True,
     )
-    if accelerator.is_main_process:
+    if accelerator.is_main_process and tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     accelerator.wait_for_everyone()

@@ -30,7 +30,7 @@ Not in the core: Ray, serving, vLLM, Spark, retrieval, semantic IDs, constrained
 pip install -e .
 ```
 
-For the SFT example, install the data package alongside this repository:
+For the SFT example and the cross-repository integration test, install the data package alongside this repository:
 
 ```bash
 pip install -e ../llm-training-data
@@ -100,3 +100,26 @@ checkpoint-00001000/
 ```
 
 `TrainerState` records the next epoch/batch position, so a resumed single-process run can continue at the next batch rather than restarting the epoch.
+
+## Tests
+
+Run unit tests with:
+
+```bash
+pytest -m "not integration"
+```
+
+Run real Hugging Face integration tests with:
+
+```bash
+pytest -m integration tests/integration
+```
+
+The checkpoint-resume integration test deliberately interrupts training after the first optimizer step, creates a fresh model and `Trainer`, resumes from `latest`, restores the saved model state and trainer position, skips the already-completed batch, and finishes the second optimizer step.
+
+The `llm-training-data` bridge test uses the real `build_sft_collator` from the sibling repository. It is skipped when `llm_training_data` is not installed. To run that cross-repository test locally:
+
+```bash
+pip install -e ../llm-training-data
+pytest -m integration tests/integration/test_training_data_bridge.py
+```

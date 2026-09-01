@@ -31,6 +31,18 @@ class SchedulerConfig:
 
 
 @dataclass(frozen=True)
+class LossConfig:
+    """Selects the default loss or a custom BaseLoss implementation.
+
+    ``module_path=None`` uses ``DefaultCrossEntropyLoss``. ``kwargs`` are passed
+    to whichever loss constructor is selected.
+    """
+
+    module_path: str | None = None
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class CheckpointConfig:
     save_every_steps: int | None = None
     keep_last: int | None = 3
@@ -49,6 +61,7 @@ class TrainingConfig:
     log_every_steps: int = 10
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    loss: LossConfig = field(default_factory=LossConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -75,6 +88,8 @@ class TrainingConfig:
             raise ValueError("scheduler.warmup_ratio must be in [0, 1]")
         if self.scheduler.warmup_steps is not None and self.scheduler.warmup_steps < 0:
             raise ValueError("scheduler.warmup_steps must be >= 0")
+        if self.loss.module_path is not None and not self.loss.module_path.strip():
+            raise ValueError("loss.module_path must be non-empty when set")
         if self.checkpoint.save_every_steps is not None and self.checkpoint.save_every_steps <= 0:
             raise ValueError("checkpoint.save_every_steps must be > 0 when set")
         if self.checkpoint.keep_last is not None and self.checkpoint.keep_last <= 0:

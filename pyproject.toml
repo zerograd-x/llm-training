@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-training"
+version = "0.1.0"
+description = "A small, opinionated training runtime for Hugging Face causal language models."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "accelerate>=1.0,<2",
+  "torch>=2.1",
+  "transformers>=4.45,<6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "integration: downloads and runs a real external model",
+]

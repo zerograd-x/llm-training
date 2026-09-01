@@ -7,34 +7,18 @@ from .config import OptimizerConfig
 
 
 def build_adamw(model: nn.Module, config: OptimizerConfig) -> Optimizer:
-    """Build AdamW over trainable parameters only.
+    """Build AdamW over trainable parameters only."""
 
-    Matrix-like parameters receive weight decay; vectors/scalars such as biases
-    and normalization parameters do not.
-    """
-
-    decay = []
-    no_decay = []
-    for parameter in model.parameters():
-        if not parameter.requires_grad:
-            continue
-        if parameter.ndim >= 2:
-            decay.append(parameter)
-        else:
-            no_decay.append(parameter)
-
-    if not decay and not no_decay:
+    trainable_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
+    if not trainable_parameters:
         raise ValueError("Model has no trainable parameters")
 
-    groups = []
-    if decay:
-        groups.append({"params": decay, "weight_decay": config.weight_decay})
-    if no_decay:
-        groups.append({"params": no_decay, "weight_decay": 0.0})
-
     return AdamW(
-        groups,
+        trainable_parameters,
         lr=config.learning_rate,
         betas=(config.beta1, config.beta2),
         eps=config.eps,
+        weight_decay=config.weight_decay,
     )

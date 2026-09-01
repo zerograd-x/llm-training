@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -8,6 +9,7 @@ from torch.utils.data import Dataset
 from llm_training import (
     BaseLoss,
     CheckpointConfig,
+    LossConfig,
     OptimizerConfig,
     SchedulerConfig,
     Trainer,
@@ -30,6 +32,17 @@ class TinyDataset(Dataset):
 
     def __getitem__(self, index: int):
         return self.rows[index]
+
+
+class FullyMaskedDataset(Dataset):
+    def __len__(self) -> int:
+        return 1
+
+    def __getitem__(self, index: int):
+        return {
+            "input_ids": torch.tensor([1, 2, 3]),
+            "labels": torch.tensor([-100, -100, -100]),
+        }
 
 
 def stack_collator(rows):
@@ -64,7 +77,7 @@ class CountingLoss(BaseLoss):
         )
 
 
-def build_config(tmp_path) -> TrainingConfig:
+def build_config(tmp_path, *, loss=None) -> TrainingConfig:
     return TrainingConfig(
         output_dir=str(tmp_path),
         num_epochs=1,
@@ -72,6 +85,7 @@ def build_config(tmp_path) -> TrainingConfig:
         log_every_steps=1,
         optimizer=OptimizerConfig(learning_rate=1e-2, weight_decay=0.0),
         scheduler=SchedulerConfig(name="linear", warmup_ratio=0.0),
+        loss=loss or LossConfig(),
         checkpoint=CheckpointConfig(save_every_steps=1, keep_last=2),
     )
 
@@ -107,3 +121,39 @@ def test_trainer_uses_runtime_custom_loss(tmp_path) -> None:
     trainer.train()
 
     assert loss_fn.calls == 2
+
+
+def test_trainer_rejects_runtime_and_config_loss_together(tmp_path) -> None:
+    config = build_config(
+        tmp_path,
+        loss=LossConfig(
+            module_path="llm_training.loss.DefaultCrossEntropyLoss",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="either Trainer"):
+        Trainer(
+            model=TinyLM(),
+            train_dataset=TinyDataset(),
+            collate_fn=stack_collator,
+            config=config,
+            loss_fn=CountingLoss(),
+        )
+
+
+def test_trainer_fails_before_update_on_nonfinite_loss(tmp_path) -> None:
+    trainer = Trainer(
+        model=TinyLM(),
+        train_dataset=FullyMaskedDataset(),
+        collate_fn=stack_collator,
+        config=TrainingConfig(
+            output_dir=str(tmp_path),
+            num_epochs=1,
+            per_device_batch_size=1,
+            optimizer=OptimizerConfig(learning_rate=1e-2, weight_decay=0.0),
+            scheduler=SchedulerConfig(name="linear", warmup_ratio=0.0),
+        ),
+    )
+
+    with pytest.raises(FloatingPointError, match="Non-finite loss"):
+        trainer.train()

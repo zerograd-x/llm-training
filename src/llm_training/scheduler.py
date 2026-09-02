@@ -58,13 +58,22 @@ def build_training_scheduler(
             num_training_steps=num_training_steps,
         )
 
+    warmup_steps = resolve_warmup_steps(
+        config.scheduler,
+        num_training_steps=num_training_steps,
+    )
+    scheduler_type = ds.scheduler.type.lower()
+    if scheduler_type in {"warmuplr", "warmupdecaylr"} and warmup_steps <= 0:
+        raise ValueError(
+            f"DeepSpeed {ds.scheduler.type} requires at least one warmup step; "
+            "set scheduler.warmup_steps >= 1 or choose a warmup_ratio that "
+            "resolves to at least one step"
+        )
+
     from accelerate.utils.deepspeed import DummyScheduler
 
     return DummyScheduler(
         optimizer,
         total_num_steps=num_training_steps,
-        warmup_num_steps=resolve_warmup_steps(
-            config.scheduler,
-            num_training_steps=num_training_steps,
-        ),
+        warmup_num_steps=warmup_steps,
     )

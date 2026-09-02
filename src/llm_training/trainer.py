@@ -5,7 +5,6 @@ import math
 from pathlib import Path
 from typing import Any
 
-from accelerate import Accelerator
 from accelerate.utils import set_seed
 import torch
 from torch import nn
@@ -14,6 +13,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, Dataset, Sampler
 from transformers import PreTrainedTokenizerBase
 
+from .backend import build_accelerator, configure_gradient_checkpointing
 from .checkpoint import (
     TrainerState,
     find_latest_checkpoint,
@@ -75,15 +75,14 @@ class Trainer:
 
         self.config = config
         self.tokenizer = tokenizer
-        self.accelerator = Accelerator(
-            gradient_accumulation_steps=config.gradient_accumulation_steps,
-            mixed_precision=config.mixed_precision,
-        )
+        self.accelerator = build_accelerator(config)
         self.loss_fn = validate_loss(loss_fn) if loss_fn is not None else load_loss(
             config.loss.module_path,
             config.loss.kwargs,
         )
         self.loss_fn.to(self.accelerator.device)
+
+        configure_gradient_checkpointing(model, config.gradient_checkpointing)
 
         self._sampler = EpochSeededRandomSampler(train_dataset, seed=config.seed)
         dataloader = DataLoader(

@@ -7,6 +7,8 @@ from torch import nn
 import llm_training.backend as backend
 from llm_training import (
     DeepSpeedConfig,
+    DeepSpeedOptimizerConfig,
+    DeepSpeedSchedulerConfig,
     GradientCheckpointingConfig,
     TrainingConfig,
 )
@@ -76,7 +78,94 @@ def test_deepspeed_config_validates_offload_requirements(tmp_path) -> None:
         ).validate()
 
 
-def test_build_accelerator_maps_general_deepspeed_config(monkeypatch, tmp_path) -> None:
+def test_deepspeed_owned_optimizer_requires_deepspeed_scheduler(tmp_path) -> None:
+    with pytest.raises(ValueError, match="requires a DeepSpeed-owned scheduler"):
+        TrainingConfig(
+            output_dir=str(tmp_path),
+            deepspeed=DeepSpeedConfig(
+                optimizer=DeepSpeedOptimizerConfig(type="AdamW"),
+            ),
+        ).validate()
+
+
+def test_deepspeed_owned_configs_cannot_override_shared_settings(tmp_path) -> None:
+    with pytest.raises(ValueError, match="must not override shared optimizer"):
+        TrainingConfig(
+            output_dir=str(tmp_path),
+            deepspeed=DeepSpeedConfig(
+                optimizer=DeepSpeedOptimizerConfig(
+                    type="AdamW",
+                    params={"lr": 1e-3},
+                ),
+                scheduler=DeepSpeedSchedulerConfig(),
+            ),
+        ).validate()
+
+    with pytest.raises(ValueError, match="must not override shared scheduler"):
+        TrainingConfig(
+            output_dir=str(tmp_path),
+            deepspeed=DeepSpeedConfig(
+                scheduler=DeepSpeedSchedulerConfig(
+                    params={"warmup_num_steps": 123},
+                ),
+            ),
+        ).validate()
+
+
+def test_build_deepspeed_config_maps_owned_optimizer_and_scheduler(tmp_path) -> None:
+    config = TrainingConfig(
+        output_dir=str(tmp_path),
+        gradient_accumulation_steps=4,
+        max_grad_norm=0.5,
+        deepspeed=DeepSpeedConfig(
+            zero_stage=3,
+            offload_optimizer_device="cpu",
+            offload_param_device="cpu",
+            optimizer=DeepSpeedOptimizerConfig(
+                type="AdamW",
+                params={"torch_adam": True},
+            ),
+            scheduler=DeepSpeedSchedulerConfig(
+                type="WarmupDecayLR",
+                params={"warmup_type": "linear"},
+            ),
+        ),
+    )
+    config.validate()
+
+    result = backend.build_deepspeed_config(config)
+
+    assert result["zero_optimization"] == {
+        "stage": 3,
+        "offload_optimizer": {"device": "cpu"},
+        "offload_param": {"device": "cpu"},
+        "stage3_gather_16bit_weights_on_model_save": True,
+    }
+    assert result["gradient_accumulation_steps"] == 4
+    assert result["gradient_clipping"] == 0.5
+    assert result["optimizer"] == {
+        "type": "AdamW",
+        "params": {
+            "torch_adam": True,
+            "lr": "auto",
+            "weight_decay": "auto",
+            "betas": [0.9, 0.95],
+            "eps": 1e-8,
+        },
+    }
+    assert result["scheduler"] == {
+        "type": "WarmupDecayLR",
+        "params": {
+            "warmup_type": "linear",
+            "warmup_min_lr": 0.0,
+            "warmup_max_lr": "auto",
+            "warmup_num_steps": "auto",
+            "total_num_steps": "auto",
+        },
+    }
+
+
+def test_build_accelerator_uses_single_deepspeed_config(monkeypatch, tmp_path) -> None:
     captured = {}
 
     class FakePlugin:
@@ -99,23 +188,14 @@ def test_build_accelerator_maps_general_deepspeed_config(monkeypatch, tmp_path) 
             zero_stage=3,
             offload_optimizer_device="cpu",
             offload_param_device="cpu",
-            zero3_save_16bit_model=True,
         ),
     )
 
     result = backend.build_accelerator(config)
 
     assert isinstance(result, FakeAccelerator)
-    assert captured["plugin"] == {
-        "gradient_accumulation_steps": 4,
-        "zero_stage": 3,
-        "offload_optimizer_device": "cpu",
-        "offload_param_device": "cpu",
-        "offload_optimizer_nvme_path": None,
-        "offload_param_nvme_path": None,
-        "zero3_init_flag": False,
-        "zero3_save_16bit_model": True,
-    }
+    assert captured["plugin"]["hf_ds_config"] == backend.build_deepspeed_config(config)
+    assert captured["plugin"]["zero3_init_flag"] is False
     accelerator_kwargs = captured["accelerator"]
     assert accelerator_kwargs["gradient_accumulation_steps"] == 4
     assert accelerator_kwargs["mixed_precision"] == "bf16"

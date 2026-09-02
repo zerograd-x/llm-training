@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+import torch
 from torch import nn
 
 import llm_training.backend as backend
@@ -14,7 +15,7 @@ from llm_training import (
 class CheckpointableModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.weight = nn.Parameter(__import__("torch").ones(1))
+        self.weight = nn.Parameter(torch.ones(1))
         self.config = SimpleNamespace(use_cache=True)
         self.calls = []
 
@@ -115,12 +116,10 @@ def test_build_accelerator_maps_general_deepspeed_config(monkeypatch, tmp_path) 
         "zero3_init_flag": False,
         "zero3_save_16bit_model": True,
     }
-    assert captured["accelerator"] == {
-        "gradient_accumulation_steps": 4,
-        "mixed_precision": "bf16",
-        "deepspeed_plugin": captured["accelerator"]["deepspeed_plugin"],
-    }
-    assert isinstance(captured["accelerator"]["deepspeed_plugin"], FakePlugin)
+    accelerator_kwargs = captured["accelerator"]
+    assert accelerator_kwargs["gradient_accumulation_steps"] == 4
+    assert accelerator_kwargs["mixed_precision"] == "bf16"
+    assert isinstance(accelerator_kwargs["deepspeed_plugin"], FakePlugin)
 
 
 def test_deepspeed_request_fails_early_when_extra_is_missing(monkeypatch, tmp_path) -> None:

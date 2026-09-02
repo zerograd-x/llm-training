@@ -1,6 +1,6 @@
 # DeepSpeed backend
 
-`llm-training` treats DeepSpeed as a training backend rather than as a second source of optimizer and scheduler configuration.
+`llm-training` treats DeepSpeed as a training backend with explicit ownership for optimization components.
 
 ## Install
 
@@ -20,9 +20,9 @@ config = TrainingConfig(
 )
 ```
 
-The current backend surface supports ZeRO stages 1, 2, and 3. The same `OptimizerConfig` and `SchedulerConfig` are used whether DeepSpeed is disabled or enabled; DeepSpeed wraps and partitions the resulting runtime state during `accelerator.prepare(...)`.
+The current backend surface supports ZeRO stages 1, 2, and 3.
 
-This keeps optimizer and scheduler semantics backend-independent:
+By default, enabling DeepSpeed does **not** replace the optimizer or scheduler. The normal `OptimizerConfig` and `SchedulerConfig` still create the real PyTorch/Hugging Face objects, and DeepSpeed wraps/partitions their runtime state during `accelerator.prepare(...)`.
 
 ```text
 OptimizerConfig + SchedulerConfig
@@ -38,6 +38,73 @@ OptimizerConfig + SchedulerConfig
    standard      DeepSpeed
                  ZeRO 1/2/3
 ```
+
+## Explicit DeepSpeed-owned optimizer and scheduler
+
+DeepSpeed ownership is opt-in. Adding an optimizer and scheduler under `DeepSpeedConfig` switches those components to DeepSpeed-managed implementations:
+
+```python
+from llm_training import (
+    DeepSpeedConfig,
+    DeepSpeedOptimizerConfig,
+    DeepSpeedSchedulerConfig,
+    OptimizerConfig,
+    SchedulerConfig,
+    TrainingConfig,
+)
+
+config = TrainingConfig(
+    output_dir="./outputs",
+    optimizer=OptimizerConfig(
+        learning_rate=2e-5,
+        weight_decay=0.1,
+        beta1=0.9,
+        beta2=0.95,
+        eps=1e-8,
+    ),
+    scheduler=SchedulerConfig(
+        warmup_ratio=0.03,
+    ),
+    deepspeed=DeepSpeedConfig(
+        zero_stage=3,
+        optimizer=DeepSpeedOptimizerConfig(
+            type="AdamW",
+            params={"torch_adam": True},
+        ),
+        scheduler=DeepSpeedSchedulerConfig(
+            type="WarmupDecayLR",
+            params={"warmup_type": "linear"},
+        ),
+    ),
+)
+```
+
+The runtime then uses:
+
+```text
+DeepSpeed optimizer config
+        -> DummyOptim
+        -> accelerator.prepare(...)
+        -> DeepSpeed creates the real optimizer
+
+DeepSpeed scheduler config
+        -> DummyScheduler
+        -> accelerator.prepare(...)
+        -> DeepSpeed creates the real scheduler
+```
+
+Common hyperparameters keep one source of truth. Learning rate, weight decay, Adam betas, and epsilon come from `OptimizerConfig`; warmup length and total training steps come from `SchedulerConfig` plus the trainer's computed training length. DeepSpeed-specific `params` may add backend-specific options but may not override those shared fields.
+
+The supported ownership combinations are:
+
+| Optimizer | Scheduler | Status |
+| --- | --- | --- |
+| Torch | Torch/HF | supported; default |
+| Torch | DeepSpeed | supported |
+| DeepSpeed | DeepSpeed | supported |
+| DeepSpeed | Torch/HF | not yet supported |
+
+The last combination requires deferred construction of a Torch/HF scheduler after DeepSpeed creates the real optimizer. It can be added later through `DummyScheduler(..., lr_scheduler_callable=...)` without changing the public configuration model.
 
 ## Offload
 
@@ -98,32 +165,3 @@ Supporting initialization-time partitioning requires moving backend context into
 ## Export
 
 Distributed export obtains the state dict through `accelerator.get_state_dict(model)` before calling Hugging Face `save_pretrained(...)`. This is important for sharded backends such as ZeRO-3, where the in-memory model parameters are not necessarily present as one complete copy on each rank.
-
-## Optimizer ownership
-
-The current default is **client-owned optimization**:
-
-```text
-llm-training creates AdamW + scheduler
-            -> DeepSpeed wraps them
-            -> ZeRO partitions runtime state
-```
-
-DeepSpeed-owned optimizers and schedulers are intentionally reserved for an explicit future mode. They are useful for DeepSpeed-native choices such as CPUAdam, Muon, or other backend-specific optimizers, but enabling DeepSpeed should not silently replace the optimizer configured by `OptimizerConfig`.
-
-The planned ownership model is:
-
-```text
-optimization backend = "torch"       # default
-    -> OptimizerConfig / SchedulerConfig
-    -> real torch optimizer + scheduler
-
-optimization backend = "deepspeed"   # explicit opt-in
-    -> DeepSpeed optimizer config
-    -> DummyOptim placeholder
-    -> DeepSpeed creates the real optimizer
-    -> optional DeepSpeed scheduler config
-    -> DummyScheduler placeholder when needed
-```
-
-The two modes will be mutually exclusive so learning rate, betas, weight decay, warmup, and scheduler ownership never have two competing sources of truth.

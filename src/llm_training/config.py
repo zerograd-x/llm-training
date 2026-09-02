@@ -55,8 +55,8 @@ class DeepSpeedOptimizerConfig:
     """Explicitly opt in to a DeepSpeed-owned optimizer.
 
     ``type`` is the optimizer name understood by DeepSpeed. ``params`` is for
-    backend-specific options; common AdamW hyperparameters remain sourced from
-    ``OptimizerConfig`` so they are not duplicated across two configurations.
+    backend-specific options; common optimizer hyperparameters remain sourced
+    from ``OptimizerConfig`` so they are not duplicated across configurations.
     """
 
     type: str = "AdamW"
@@ -186,7 +186,12 @@ class TrainingConfig:
             if ds.scheduler is not None:
                 if not ds.scheduler.type.strip():
                     raise ValueError("deepspeed.scheduler.type must be non-empty")
-                reserved_scheduler = {"warmup_num_steps", "total_num_steps"}
+                reserved_scheduler = {
+                    "warmup_min_lr",
+                    "warmup_max_lr",
+                    "warmup_num_steps",
+                    "total_num_steps",
+                }
                 overlap = sorted(reserved_scheduler.intersection(ds.scheduler.params))
                 if overlap:
                     raise ValueError(

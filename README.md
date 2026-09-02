@@ -19,6 +19,8 @@ The first version focuses on one golden path:
 - full fine-tuning or selective layer freezing
 - configurable causal-LM loss with a default masked cross-entropy implementation
 - AdamW + Hugging Face schedulers
+- optional model-native gradient checkpointing
+- optional DeepSpeed ZeRO-1/2/3 backend
 - deterministic epoch sampling
 - checkpoint/save/resume of model, optimizer, scheduler, RNG, and trainer position
 - a thin adapter for `llm-training-data` column-batch collators
@@ -29,6 +31,12 @@ Serving, data-processing systems, domain-specific model wrappers, and other appl
 
 ```bash
 pip install -e .
+```
+
+Install the optional DeepSpeed backend with:
+
+```bash
+pip install -e ".[deepspeed]"
 ```
 
 For the SFT example and the cross-repository integration test, install the data package alongside this repository:
@@ -141,6 +149,32 @@ config = TrainingConfig(
 ```
 
 Use either `Trainer(loss_fn=...)` or `TrainingConfig.loss`, not both. Loss modules must not contain trainable parameters; trainable objective components belong on the model so distributed/sharded training backends can manage them with the rest of the model state.
+
+## DeepSpeed and gradient checkpointing
+
+DeepSpeed is an optional backend; enabling it does not change who owns optimizer and scheduler configuration.
+
+```python
+from llm_training import (
+    DeepSpeedConfig,
+    GradientCheckpointingConfig,
+    TrainingConfig,
+)
+
+config = TrainingConfig(
+    output_dir="./outputs",
+    mixed_precision="bf16",
+    gradient_checkpointing=GradientCheckpointingConfig(
+        enabled=True,
+        use_reentrant=False,
+    ),
+    deepspeed=DeepSpeedConfig(zero_stage=3),
+)
+```
+
+ZeRO-3 partitions parameters after `accelerator.prepare(...)`. The current API does not yet partition parameters during `from_pretrained()` itself, because model loading still happens before the training backend is constructed. Distributed model export uses `accelerator.get_state_dict(model)` so sharded parameters can be consolidated correctly.
+
+See [`docs/deepspeed.md`](docs/deepspeed.md) for ZeRO stages, offload settings, the initialization-time limitation, export behavior, and the planned explicit DeepSpeed-owned optimizer/scheduler mode.
 
 ## Checkpoint semantics
 

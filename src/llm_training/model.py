@@ -58,10 +58,12 @@ def save_causal_lm(
 
     accelerator.wait_for_everyone()
     unwrapped = accelerator.unwrap_model(model)
+    state_dict = accelerator.get_state_dict(model)
     unwrapped.save_pretrained(
         output_dir,
         is_main_process=accelerator.is_main_process,
         save_function=accelerator.save,
+        state_dict=state_dict,
         safe_serialization=True,
     )
     if accelerator.is_main_process and tokenizer is not None:

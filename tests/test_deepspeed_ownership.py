@@ -25,16 +25,17 @@ def test_default_deepspeed_path_keeps_torch_optimizer_and_scheduler(tmp_path) ->
     )
 
     optimizer = build_training_optimizer(model, config)
+    assert isinstance(optimizer, AdamW)
+    assert not isinstance(optimizer, DummyOptim)
+    assert optimizer.defaults["lr"] == 3e-4
+
     scheduler = build_training_scheduler(
         optimizer,
         config,
         num_training_steps=10,
     )
 
-    assert isinstance(optimizer, AdamW)
-    assert not isinstance(optimizer, DummyOptim)
     assert not isinstance(scheduler, DummyScheduler)
-    assert optimizer.param_groups[0]["lr"] == 3e-4
 
 
 def test_deepspeed_owned_optimizer_and_scheduler_use_dummy_placeholders(tmp_path) -> None:

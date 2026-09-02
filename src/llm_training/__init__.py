@@ -6,7 +6,9 @@ from .checkpoint import (
 )
 from .config import (
     CheckpointConfig,
+    DeepSpeedConfig,
     FreezeConfig,
+    GradientCheckpointingConfig,
     LossConfig,
     OptimizerConfig,
     SchedulerConfig,
@@ -34,9 +36,11 @@ __all__ = [
     "BaseLoss",
     "CausalLMComponents",
     "CheckpointConfig",
+    "DeepSpeedConfig",
     "DefaultCrossEntropyLoss",
     "FreezeConfig",
     "FreezeSummary",
+    "GradientCheckpointingConfig",
     "IGNORE_INDEX",
     "LossConfig",
     "OptimizerConfig",

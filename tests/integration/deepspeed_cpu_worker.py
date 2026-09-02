@@ -77,7 +77,7 @@ def build_config(output_dir: Path, *, resume_from: str | None = None) -> Trainin
             beta2=0.95,
             eps=1e-8,
         ),
-        scheduler=SchedulerConfig(name="linear", warmup_ratio=0.0),
+        scheduler=SchedulerConfig(name="linear", warmup_steps=1),
         deepspeed=DeepSpeedConfig(
             zero_stage=2,
             optimizer=DeepSpeedOptimizerConfig(

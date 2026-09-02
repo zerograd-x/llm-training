@@ -24,8 +24,8 @@ from .checkpoint import (
 from .config import TrainingConfig
 from .loss import BaseLoss, load_loss, shift_causal_labels, validate_loss
 from .model import save_causal_lm
-from .optimizer import build_adamw
-from .scheduler import build_scheduler
+from .optimizer import build_training_optimizer
+from .scheduler import build_training_scheduler
 
 
 class EpochSeededRandomSampler(Sampler[int]):
@@ -73,6 +73,18 @@ class Trainer:
                 "Specify either Trainer(loss_fn=...) or config.loss, not both"
             )
 
+        ds = config.deepspeed
+        if optimizer is not None and ds is not None and ds.optimizer is not None:
+            raise ValueError(
+                "Trainer optimizer injection cannot be combined with a "
+                "DeepSpeed-owned optimizer"
+            )
+        if scheduler is not None and ds is not None and ds.scheduler is not None:
+            raise ValueError(
+                "Trainer scheduler injection cannot be combined with a "
+                "DeepSpeed-owned scheduler"
+            )
+
         self.config = config
         self.tokenizer = tokenizer
         self.accelerator = build_accelerator(config)
@@ -94,14 +106,14 @@ class Trainer:
         if len(dataloader) == 0:
             raise ValueError("Training dataset produced an empty dataloader")
 
-        optimizer = optimizer or build_adamw(model, config.optimizer)
+        optimizer = optimizer or build_training_optimizer(model, config)
         updates_per_epoch = math.ceil(
             len(dataloader) / config.gradient_accumulation_steps
         )
         total_training_steps = updates_per_epoch * config.num_epochs
-        scheduler = scheduler or build_scheduler(
+        scheduler = scheduler or build_training_scheduler(
             optimizer,
-            config.scheduler,
+            config,
             num_training_steps=total_training_steps,
         )
 

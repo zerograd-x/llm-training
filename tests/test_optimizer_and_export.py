@@ -35,8 +35,10 @@ class SaveableModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.ones(1))
+        self.last_save_kwargs = None
 
     def save_pretrained(self, output_dir, **kwargs) -> None:
+        self.last_save_kwargs = kwargs
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "model.saved").write_text("ok\n")
@@ -46,3 +48,38 @@ def test_save_causal_lm_allows_missing_tokenizer(tmp_path) -> None:
     save_causal_lm(SaveableModel(), None, tmp_path)
 
     assert (tmp_path / "model.saved").is_file()
+
+
+class FakeAccelerator:
+    is_main_process = True
+
+    def __init__(self) -> None:
+        self.state_dict_requested = False
+
+    def wait_for_everyone(self) -> None:
+        pass
+
+    def unwrap_model(self, model):
+        return model
+
+    def get_state_dict(self, model):
+        self.state_dict_requested = True
+        return {"weight": model.weight.detach().clone()}
+
+    def save(self, *args, **kwargs) -> None:
+        pass
+
+
+def test_save_causal_lm_uses_accelerator_state_dict(tmp_path) -> None:
+    model = SaveableModel()
+    accelerator = FakeAccelerator()
+
+    save_causal_lm(model, None, tmp_path, accelerator=accelerator)
+
+    assert accelerator.state_dict_requested
+    assert model.last_save_kwargs is not None
+    assert "state_dict" in model.last_save_kwargs
+    torch.testing.assert_close(
+        model.last_save_kwargs["state_dict"]["weight"],
+        model.weight.detach(),
+    )

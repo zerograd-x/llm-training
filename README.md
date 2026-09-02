@@ -21,11 +21,14 @@ The first version focuses on one golden path:
 - AdamW + Hugging Face schedulers
 - optional model-native gradient checkpointing
 - optional DeepSpeed ZeRO-1/2/3 backend
+- optional DeepSpeed-owned optimizer and scheduler through explicit configuration
 - deterministic epoch sampling
 - checkpoint/save/resume of model, optimizer, scheduler, RNG, and trainer position
 - a thin adapter for `llm-training-data` column-batch collators
 
 Serving, data-processing systems, domain-specific model wrappers, and other application-specific extensions stay outside the core runtime.
+
+Planned core capabilities after the current backend foundation include PEFT/LoRA and richer optimizer support such as Muon. These are considered part of the training runtime roadmap rather than application-specific extensions.
 
 ## Install
 
@@ -152,7 +155,7 @@ Use either `Trainer(loss_fn=...)` or `TrainingConfig.loss`, not both. Loss modul
 
 ## DeepSpeed and gradient checkpointing
 
-DeepSpeed is an optional backend; enabling it does not change who owns optimizer and scheduler configuration.
+DeepSpeed is an optional backend. Enabling ZeRO alone keeps the normal Torch/Hugging Face optimizer and scheduler; DeepSpeed-owned optimizer/scheduler behavior is a separate explicit opt-in.
 
 ```python
 from llm_training import (
@@ -172,9 +175,31 @@ config = TrainingConfig(
 )
 ```
 
+To let DeepSpeed create the optimizer and scheduler:
+
+```python
+from llm_training import (
+    DeepSpeedConfig,
+    DeepSpeedOptimizerConfig,
+    DeepSpeedSchedulerConfig,
+    TrainingConfig,
+)
+
+config = TrainingConfig(
+    output_dir="./outputs",
+    deepspeed=DeepSpeedConfig(
+        zero_stage=3,
+        optimizer=DeepSpeedOptimizerConfig(type="AdamW"),
+        scheduler=DeepSpeedSchedulerConfig(type="WarmupDecayLR"),
+    ),
+)
+```
+
+This path uses Accelerate `DummyOptim` and `DummyScheduler` placeholders until `accelerator.prepare(...)`, where DeepSpeed creates the real implementations. A Torch optimizer with a DeepSpeed-owned scheduler is also supported. A DeepSpeed-owned optimizer with a Torch/Hugging Face scheduler is intentionally deferred because it requires constructing that scheduler only after the real DeepSpeed optimizer exists.
+
 ZeRO-3 partitions parameters after `accelerator.prepare(...)`. The current API does not yet partition parameters during `from_pretrained()` itself, because model loading still happens before the training backend is constructed. Distributed model export uses `accelerator.get_state_dict(model)` so sharded parameters can be consolidated correctly.
 
-See [`docs/deepspeed.md`](docs/deepspeed.md) for ZeRO stages, offload settings, the initialization-time limitation, export behavior, and the planned explicit DeepSpeed-owned optimizer/scheduler mode.
+See [`docs/deepspeed.md`](docs/deepspeed.md) for ownership combinations, ZeRO stages, offload settings, initialization-time limitations, and export behavior.
 
 ## Checkpoint semantics
 

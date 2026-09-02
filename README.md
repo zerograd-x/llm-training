@@ -28,7 +28,7 @@ The first version focuses on one golden path:
 
 Serving, data-processing systems, domain-specific model wrappers, and other application-specific extensions stay outside the core runtime.
 
-Planned core capabilities after the current backend foundation include PEFT/LoRA and richer optimizer support such as Muon. These are considered part of the training runtime roadmap rather than application-specific extensions.
+Planned core capabilities after the current backend foundation include PEFT/LoRA and richer optimizer support such as Muon. These are considered part of the training runtime roadmap rather than application-specific extensions. See [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Install
 

@@ -95,6 +95,8 @@ DeepSpeed scheduler config
 
 Common hyperparameters keep one source of truth. Learning rate, weight decay, Adam betas, and epsilon come from `OptimizerConfig`; warmup length and total training steps come from `SchedulerConfig` plus the trainer's computed training length. DeepSpeed-specific `params` may add backend-specific options but may not override those shared fields.
 
+DeepSpeed `WarmupLR` and `WarmupDecayLR` require at least one warmup step. The runtime rejects a resolved warmup of zero before entering DeepSpeed rather than silently changing the requested schedule.
+
 The supported ownership combinations are:
 
 | Optimizer | Scheduler | Status |
@@ -165,3 +167,44 @@ Supporting initialization-time partitioning requires moving backend context into
 ## Export
 
 Distributed export obtains the state dict through `accelerator.get_state_dict(model)` before calling Hugging Face `save_pretrained(...)`. This is important for sharded backends such as ZeRO-3, where the in-memory model parameters are not necessarily present as one complete copy on each rank.
+
+## Validation levels
+
+DeepSpeed support is validated at multiple levels rather than treating all tests as equivalent.
+
+### CPU unit tests
+
+Normal CI validates configuration translation, ownership rules, `DummyOptim` / `DummyScheduler` construction, offload validation, gradient-checkpointing configuration, and ZeRO-aware export contracts without starting a DeepSpeed engine.
+
+### Real DeepSpeed CPU integration
+
+A separate CPU CI job installs the real DeepSpeed package and starts an actual DeepSpeed runtime. The integration test uses a tiny locally constructed Hugging Face GPT-2 model and validates:
+
+- `deepspeed.initialize()` through `Accelerator.prepare(...)`;
+- a real `DeepSpeedEngine` rather than a mock;
+- DeepSpeed-owned AdamW through `DummyOptim`;
+- DeepSpeed-owned `WarmupDecayLR` through `DummyScheduler`;
+- forward, external causal-LM loss, backward, optimizer step, and scheduler step;
+- a step-1 DeepSpeed checkpoint followed by an intentional process interruption;
+- resume from that checkpoint in a fresh Python process;
+- completion of the next optimizer step;
+- Hugging Face model export after resume.
+
+This test currently exercises ZeRO stage 2 with world size 1. It verifies real DeepSpeed/Accelerate API integration and checkpoint lifecycle on CPU, but it does **not** prove cross-rank parameter partitioning.
+
+### GPU validation still required
+
+The following remain separate validation levels:
+
+```text
+1 GPU DeepSpeed smoke
+    -> CUDA + bf16 + DeepSpeed runtime behavior
+
+2+ GPU ZeRO-3 integration
+    -> real cross-rank parameter partitioning
+    -> all-gather / reduce-scatter communication
+    -> distributed checkpoint/resume
+    -> consolidated Hugging Face export
+```
+
+A single CPU rank or single GPU rank can enter ZeRO code paths, but cannot validate the defining multi-rank partitioning behavior of ZeRO-3. Multi-GPU validation therefore remains a release/milestone test rather than a claim implied by the CPU integration suite.

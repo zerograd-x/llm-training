@@ -1,3 +1,4 @@
+import pytest
 import torch
 from accelerate.utils.deepspeed import DummyOptim, DummyScheduler
 from torch import nn
@@ -94,3 +95,23 @@ def test_torch_optimizer_can_use_deepspeed_owned_scheduler(tmp_path) -> None:
     assert scheduler.optimizer is optimizer
     assert scheduler.warmup_num_steps == 3
     assert scheduler.total_num_steps == 12
+
+
+def test_deepspeed_warmup_scheduler_rejects_zero_warmup(tmp_path) -> None:
+    model = nn.Linear(4, 2)
+    config = TrainingConfig(
+        output_dir=str(tmp_path),
+        scheduler=SchedulerConfig(warmup_steps=0),
+        deepspeed=DeepSpeedConfig(
+            zero_stage=2,
+            scheduler=DeepSpeedSchedulerConfig(type="WarmupDecayLR"),
+        ),
+    )
+
+    optimizer = build_training_optimizer(model, config)
+    with pytest.raises(ValueError, match="requires at least one warmup step"):
+        build_training_scheduler(
+            optimizer,
+            config,
+            num_training_steps=2,
+        )

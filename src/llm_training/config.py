@@ -51,12 +51,29 @@ class GradientCheckpointingConfig:
 
 
 @dataclass(frozen=True)
-class DeepSpeedConfig:
-    """Small, backend-agnostic surface for common DeepSpeed ZeRO settings.
+class DeepSpeedOptimizerConfig:
+    """Explicitly opt in to a DeepSpeed-owned optimizer.
 
-    Optimizer and scheduler ownership stays in ``llm-training``. This config is
-    intentionally limited to parameter/gradient/state partitioning and offload.
+    ``type`` is the optimizer name understood by DeepSpeed. ``params`` is for
+    backend-specific options; common AdamW hyperparameters remain sourced from
+    ``OptimizerConfig`` so they are not duplicated across two configurations.
     """
+
+    type: str = "AdamW"
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DeepSpeedSchedulerConfig:
+    """Explicitly opt in to a DeepSpeed-owned learning-rate scheduler."""
+
+    type: str = "WarmupDecayLR"
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DeepSpeedConfig:
+    """Small, general surface for DeepSpeed ZeRO and optional DS ownership."""
 
     zero_stage: Literal[1, 2, 3] = 2
     offload_optimizer_device: Literal["none", "cpu", "nvme"] = "none"
@@ -64,6 +81,8 @@ class DeepSpeedConfig:
     offload_optimizer_nvme_path: str | None = None
     offload_param_nvme_path: str | None = None
     zero3_save_16bit_model: bool = True
+    optimizer: DeepSpeedOptimizerConfig | None = None
+    scheduler: DeepSpeedSchedulerConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +165,34 @@ class TrainingConfig:
                 raise ValueError(
                     "deepspeed.offload_param_nvme_path is required for NVMe parameter offload"
                 )
+
+            if ds.optimizer is not None:
+                if not ds.optimizer.type.strip():
+                    raise ValueError("deepspeed.optimizer.type must be non-empty")
+                reserved = {"lr", "weight_decay"}
+                if ds.optimizer.type.lower() in {"adam", "adamw"}:
+                    reserved |= {"betas", "eps"}
+                overlap = sorted(reserved.intersection(ds.optimizer.params))
+                if overlap:
+                    raise ValueError(
+                        "deepspeed.optimizer.params must not override shared optimizer "
+                        f"settings: {', '.join(overlap)}"
+                    )
+                if ds.scheduler is None:
+                    raise ValueError(
+                        "DeepSpeed-owned optimizer requires a DeepSpeed-owned scheduler"
+                    )
+
+            if ds.scheduler is not None:
+                if not ds.scheduler.type.strip():
+                    raise ValueError("deepspeed.scheduler.type must be non-empty")
+                reserved_scheduler = {"warmup_num_steps", "total_num_steps"}
+                overlap = sorted(reserved_scheduler.intersection(ds.scheduler.params))
+                if overlap:
+                    raise ValueError(
+                        "deepspeed.scheduler.params must not override shared scheduler "
+                        f"settings: {', '.join(overlap)}"
+                    )
 
         if self.checkpoint.save_every_steps is not None and self.checkpoint.save_every_steps <= 0:
             raise ValueError("checkpoint.save_every_steps must be > 0 when set")

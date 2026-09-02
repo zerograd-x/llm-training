@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,30 @@ class LossConfig:
 
 
 @dataclass(frozen=True)
+class GradientCheckpointingConfig:
+    """Controls model-native activation checkpointing."""
+
+    enabled: bool = False
+    use_reentrant: bool | None = None
+
+
+@dataclass(frozen=True)
+class DeepSpeedConfig:
+    """Small, backend-agnostic surface for common DeepSpeed ZeRO settings.
+
+    Optimizer and scheduler ownership stays in ``llm-training``. This config is
+    intentionally limited to parameter/gradient/state partitioning and offload.
+    """
+
+    zero_stage: Literal[1, 2, 3] = 2
+    offload_optimizer_device: Literal["none", "cpu", "nvme"] = "none"
+    offload_param_device: Literal["none", "cpu", "nvme"] = "none"
+    offload_optimizer_nvme_path: str | None = None
+    offload_param_nvme_path: str | None = None
+    zero3_save_16bit_model: bool = True
+
+
+@dataclass(frozen=True)
 class CheckpointConfig:
     save_every_steps: int | None = None
     keep_last: int | None = 3
@@ -62,6 +86,10 @@ class TrainingConfig:
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     loss: LossConfig = field(default_factory=LossConfig)
+    gradient_checkpointing: GradientCheckpointingConfig = field(
+        default_factory=GradientCheckpointingConfig
+    )
+    deepspeed: DeepSpeedConfig | None = None
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,6 +118,35 @@ class TrainingConfig:
             raise ValueError("scheduler.warmup_steps must be >= 0")
         if self.loss.module_path is not None and not self.loss.module_path.strip():
             raise ValueError("loss.module_path must be non-empty when set")
+
+        if self.deepspeed is not None:
+            ds = self.deepspeed
+            if ds.zero_stage not in {1, 2, 3}:
+                raise ValueError("deepspeed.zero_stage must be one of: 1, 2, 3")
+            if ds.offload_optimizer_device not in {"none", "cpu", "nvme"}:
+                raise ValueError(
+                    "deepspeed.offload_optimizer_device must be one of: none, cpu, nvme"
+                )
+            if ds.offload_param_device not in {"none", "cpu", "nvme"}:
+                raise ValueError(
+                    "deepspeed.offload_param_device must be one of: none, cpu, nvme"
+                )
+            if ds.zero_stage < 2 and ds.offload_optimizer_device != "none":
+                raise ValueError("optimizer offload requires DeepSpeed ZeRO stage 2 or 3")
+            if ds.zero_stage != 3 and ds.offload_param_device != "none":
+                raise ValueError("parameter offload requires DeepSpeed ZeRO stage 3")
+            if (
+                ds.offload_optimizer_device == "nvme"
+                and not ds.offload_optimizer_nvme_path
+            ):
+                raise ValueError(
+                    "deepspeed.offload_optimizer_nvme_path is required for NVMe optimizer offload"
+                )
+            if ds.offload_param_device == "nvme" and not ds.offload_param_nvme_path:
+                raise ValueError(
+                    "deepspeed.offload_param_nvme_path is required for NVMe parameter offload"
+                )
+
         if self.checkpoint.save_every_steps is not None and self.checkpoint.save_every_steps <= 0:
             raise ValueError("checkpoint.save_every_steps must be > 0 when set")
         if self.checkpoint.keep_last is not None and self.checkpoint.keep_last <= 0:

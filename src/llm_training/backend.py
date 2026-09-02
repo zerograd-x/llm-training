@@ -62,6 +62,8 @@ def build_accelerator(config: TrainingConfig) -> Accelerator:
             zero_stage=ds.zero_stage,
             offload_optimizer_device=ds.offload_optimizer_device,
             offload_param_device=ds.offload_param_device,
+            offload_optimizer_nvme_path=ds.offload_optimizer_nvme_path,
+            offload_param_nvme_path=ds.offload_param_nvme_path,
             # The model is currently constructed before Trainer/Accelerator, so
             # ZeRO-3 init-time partitioning is intentionally not claimed here.
             zero3_init_flag=False,

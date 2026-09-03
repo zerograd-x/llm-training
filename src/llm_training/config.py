@@ -37,6 +37,21 @@ class LoRAConfig:
 
 
 @dataclass(frozen=True)
+class TrainableTokensConfig:
+    """Train only newly appended vocabulary rows through PEFT TrainableTokens.
+
+    The model must already have been resized to the expanded vocabulary before
+    it is passed to ``Trainer``. ``n_tokens_added`` identifies the final N rows
+    of that resized vocabulary as trainable. The runtime deliberately uses
+    PEFT's TrainableTokens implementation rather than gradient masking a full
+    embedding matrix.
+    """
+
+    n_tokens_added: int
+    adapter_name: str = "default"
+
+
+@dataclass(frozen=True)
 class OptimizerConfig:
     learning_rate: float = 2e-5
     weight_decay: float = 0.1
@@ -126,6 +141,7 @@ class TrainingConfig:
     log_every_steps: int = 10
     freeze: FreezeConfig | None = None
     lora: LoRAConfig | None = None
+    trainable_tokens: TrainableTokensConfig | None = None
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     loss: LossConfig = field(default_factory=LossConfig)
@@ -182,6 +198,23 @@ class TrainingConfig:
                     raise ValueError("lora.target_modules must not contain empty names")
                 if len(set(lora.target_modules)) != len(lora.target_modules):
                     raise ValueError("lora.target_modules must not contain duplicates")
+
+        if self.trainable_tokens is not None:
+            trainable_tokens = self.trainable_tokens
+            if trainable_tokens.n_tokens_added <= 0:
+                raise ValueError("trainable_tokens.n_tokens_added must be > 0")
+            if not trainable_tokens.adapter_name.strip():
+                raise ValueError("trainable_tokens.adapter_name must be non-empty")
+            if self.lora is not None:
+                raise ValueError(
+                    "lora and trainable_tokens cannot be enabled together yet; "
+                    "use one PEFT adaptation method per training run"
+                )
+            if self.freeze is not None:
+                raise ValueError(
+                    "freeze and trainable_tokens cannot be combined yet: standalone "
+                    "TrainableTokens means only the selected vocabulary rows are trainable"
+                )
 
         if self.optimizer.learning_rate <= 0:
             raise ValueError("optimizer.learning_rate must be > 0")

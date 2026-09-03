@@ -15,7 +15,7 @@ from transformers import PreTrainedTokenizerBase
 
 from .adapters import ModelAdaptationSummary, adapt_model_for_training
 from .artifacts import save_lora_adapter, save_trainable_tokens_adapter
-from .backend import build_accelerator, configure_gradient_checkpointing
+from .backend import configure_gradient_checkpointing
 from .checkpoint import (
     TrainerState,
     find_latest_checkpoint,
@@ -24,6 +24,7 @@ from .checkpoint import (
     save_training_checkpoint,
 )
 from .config import TrainingConfig
+from .distributed import DistributedRuntime
 from .loss import BaseLoss, load_loss, shift_causal_labels, validate_loss
 from .model import save_causal_lm
 from .optimizer import build_training_optimizer
@@ -64,6 +65,7 @@ class Trainer:
         optimizer: Optimizer | None = None,
         scheduler: LRScheduler | None = None,
         loss_fn: BaseLoss | None = None,
+        runtime: DistributedRuntime | None = None,
     ) -> None:
         config.validate()
         set_seed(config.seed)
@@ -96,7 +98,9 @@ class Trainer:
 
         self.config = config
         self.tokenizer = tokenizer
-        self.accelerator = build_accelerator(config)
+        self.runtime = runtime or DistributedRuntime(config)
+        self.runtime.ensure_config(config)
+        self.accelerator = self.runtime.accelerator
         self.loss_fn = validate_loss(loss_fn) if loss_fn is not None else load_loss(
             config.loss.module_path,
             config.loss.kwargs,

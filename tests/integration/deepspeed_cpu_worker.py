@@ -66,6 +66,21 @@ def build_model() -> GPT2LMHeadModel:
     )
 
 
+def lora_base_dir(output_dir: Path) -> Path:
+    return output_dir / "lora-base-model"
+
+
+def build_training_model(output_dir: Path, *, lora: bool) -> GPT2LMHeadModel:
+    if not lora:
+        return build_model()
+
+    base_dir = lora_base_dir(output_dir)
+    if not (base_dir / "config.json").is_file():
+        base_dir.mkdir(parents=True, exist_ok=True)
+        build_model().save_pretrained(base_dir, safe_serialization=True)
+    return GPT2LMHeadModel.from_pretrained(base_dir)
+
+
 def build_config(
     output_dir: Path,
     *,
@@ -128,7 +143,7 @@ def _trainable_names(trainer: Trainer) -> list[str]:
 
 def run_interrupt(output_dir: Path, *, lora: bool = False) -> None:
     trainer = InterruptAfterFirstCheckpointTrainer(
-        model=build_model(),
+        model=build_training_model(output_dir, lora=lora),
         train_dataset=TensorRows(),
         collate_fn=stack_collator,
         config=build_config(output_dir, lora=lora),
@@ -173,7 +188,7 @@ def run_interrupt(output_dir: Path, *, lora: bool = False) -> None:
 
 def run_resume(output_dir: Path, *, lora: bool = False) -> None:
     trainer = Trainer(
-        model=build_model(),
+        model=build_training_model(output_dir, lora=lora),
         train_dataset=TensorRows(),
         collate_fn=stack_collator,
         config=build_config(output_dir, resume_from="latest", lora=lora),
@@ -193,7 +208,18 @@ def run_resume(output_dir: Path, *, lora: bool = False) -> None:
     assert state.batch_in_epoch == 0
     assert (output_dir / "checkpoint-00000002" / "trainer_state.json").is_file()
 
-    if not lora:
+    reference_logits = None
+    adapter_dir = None
+    if lora:
+        model = trainer.accelerator.unwrap_model(trainer.model)
+        fixed_input = torch.tensor([[1, 4, 5, 2]], dtype=torch.long)
+        model.eval()
+        with torch.no_grad():
+            reference_logits = model(input_ids=fixed_input).logits.detach().cpu().tolist()
+        adapter_dir = trainer.save_adapter()
+        assert (adapter_dir / "adapter_config.json").is_file()
+        assert (adapter_dir / "adapter_model.safetensors").is_file()
+    else:
         trainer.export_model()
         final_model = output_dir / "final-model"
         assert (final_model / "config.json").is_file()
@@ -211,6 +237,9 @@ def run_resume(output_dir: Path, *, lora: bool = False) -> None:
                 "optimizer": type(trainer.optimizer).__name__,
                 "scheduler": type(trainer.scheduler).__name__,
                 "trainable_names": trainable_names,
+                "base_dir": str(lora_base_dir(output_dir)) if lora else None,
+                "adapter_dir": str(adapter_dir) if adapter_dir is not None else None,
+                "reference_logits": reference_logits,
             },
             indent=2,
         )

@@ -2,8 +2,15 @@ from .adapters import (
     ModelAdaptationSummary,
     adapt_model_for_training,
     discover_lora_target_modules,
+    discover_trainable_token_target_modules,
+    resolve_trainable_token_ids,
 )
-from .artifacts import merge_lora, save_lora_adapter
+from .artifacts import (
+    merge_lora,
+    merge_trainable_tokens,
+    save_lora_adapter,
+    save_trainable_tokens_adapter,
+)
 from .checkpoint import (
     TrainerState,
     find_latest_checkpoint,
@@ -21,6 +28,7 @@ from .config import (
     LossConfig,
     OptimizerConfig,
     SchedulerConfig,
+    TrainableTokensConfig,
     TrainingConfig,
 )
 from .data import adapt_column_batch_collator, rows_to_column_batch
@@ -58,6 +66,7 @@ __all__ = [
     "ModelAdaptationSummary",
     "OptimizerConfig",
     "SchedulerConfig",
+    "TrainableTokensConfig",
     "Trainer",
     "TrainerState",
     "TrainingConfig",
@@ -65,6 +74,7 @@ __all__ = [
     "adapt_model_for_training",
     "apply_freeze_policy",
     "discover_lora_target_modules",
+    "discover_trainable_token_target_modules",
     "find_embedding",
     "find_latest_checkpoint",
     "find_lm_head",
@@ -73,9 +83,12 @@ __all__ = [
     "load_loss",
     "load_training_checkpoint",
     "merge_lora",
+    "merge_trainable_tokens",
+    "resolve_trainable_token_ids",
     "rows_to_column_batch",
     "save_causal_lm",
     "save_lora_adapter",
+    "save_trainable_tokens_adapter",
     "save_training_checkpoint",
     "shift_causal_labels",
     "summarize_trainable_parameters",

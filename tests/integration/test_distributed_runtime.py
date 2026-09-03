@@ -60,6 +60,13 @@ def test_two_rank_distributed_runtime_ownership_and_data_sharding(tmp_path: Path
     assert seen0.isdisjoint(seen1)
     assert seen0 | seen1 == set(range(8))
 
+    # Eight examples, per-device batch size two, world size two => two global
+    # optimizer steps. The linear scheduler must therefore finish at zero on
+    # both ranks rather than using the unsharded four-batch DataLoader length.
+    assert rank0["global_step"] == rank1["global_step"] == 2
+    assert rank0["final_lr"] == pytest.approx(0.0, abs=1e-12)
+    assert rank1["final_lr"] == pytest.approx(0.0, abs=1e-12)
+
     # Offline merge/publish work is not allowed to run while WORLD_SIZE > 1.
     assert "driver-only" in rank0["driver_guard_error"]
     assert "driver-only" in rank1["driver_guard_error"]

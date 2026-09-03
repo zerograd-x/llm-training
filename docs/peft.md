@@ -158,8 +158,64 @@ CPU integration covers:
 
 These tests do **not** validate multi-rank ZeRO-3 parameter partitioning or NCCL behavior.
 
-## Export boundary
+## Deployment artifact lifecycle
 
-Training-state checkpointing and deployment artifacts are intentionally separate concepts.
+Training-state checkpoints, PEFT adapter artifacts, and merged deployment models are separate artifacts.
 
-The current LoRA phase does not overload the existing full-model `Trainer.export_model()` path. Calling `export_model()` with `config.lora` enabled fails explicitly. Adapter-only PEFT export and optional merged full-model export belong to the adapter-artifact phase so their memory, ZeRO gathering, and portability contracts can be implemented and tested independently.
+For pure LoRA (`freeze=None`, `lora.bias="none"`), save the small PEFT artifact from the trainer:
+
+```python
+adapter_dir = trainer.save_adapter()
+```
+
+The artifact contains the standard PEFT adapter files plus generic training metadata and the tokenizer when one was supplied to `Trainer`:
+
+```text
+adapter/
+    adapter_config.json
+    adapter_model.safetensors
+    training_config.json
+    tokenizer files ...        # when available
+```
+
+`save_adapter()` does not consolidate or serialize the base model. If the configured DeepSpeed stage is ZeRO-3, the implementation enters `deepspeed.zero.GatheredParameters` for only the trainable LoRA parameters before creating the PEFT state dict. This code path is designed to avoid gathering the full base model, but real multi-rank ZeRO-3 adapter serialization remains a Phase-5 validation item.
+
+Hybrid LoRA is intentionally rejected by `save_adapter()` for now. If any base parameters are also fully trained, adapter-only state is not a complete representation of training and a separate base-override artifact is required.
+
+### Offline merge
+
+Use `merge_lora(...)` outside the distributed training workers to create a plain Hugging Face model:
+
+```python
+from llm_training import merge_lora
+
+merged_dir = merge_lora(
+    base_model_name_or_path="./exact-base-model",
+    adapter_path="./outputs/adapter",
+    output_dir="./outputs/merged-model",
+)
+```
+
+The merge lifecycle is:
+
+```text
+exact base HF checkpoint
+        +
+PEFT adapter artifact
+        ↓
+PeftModel.from_pretrained(...)
+        ↓
+merge_and_unload()
+        ↓
+plain HF model
+        ↓
+save_pretrained(...)
+```
+
+The exact base matters: the merge must use the same base model shape and vocabulary that the adapter was trained against. This becomes especially important once vocabulary extension / TrainableTokens are supported.
+
+If the adapter artifact contains tokenizer files, `merge_lora()` copies their effective tokenizer configuration into the merged model. Otherwise it uses the base tokenizer when the supplied base location exposes one. Generic `training_config.json` metadata is also carried over. Storage-specific sidecars and upload logic remain outside `llm-training`.
+
+Integration tests compare logits from the trained PEFT model against logits from the offline merged plain HF model, rather than checking only that files were created. The same adapter-save/offline-merge flow is also tested after a real DeepSpeed CPU checkpoint and fresh-process resume.
+
+`Trainer.export_model()` remains reserved for ordinary full fine-tuning. With LoRA enabled it directs callers to `save_adapter()` followed by offline `merge_lora(...)` instead of guessing which artifact type the caller intended.

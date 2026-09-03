@@ -35,6 +35,8 @@ class ModelAdaptationSummary:
     trainable_parameters: int
     total_parameters: int
     full_train_base_parameters: int
+    full_train_base_parameter_names: tuple[str, ...] = ()
+    full_train_base_wrapped_parameter_names: tuple[str, ...] = ()
 
     @property
     def trainable_fraction(self) -> float:
@@ -116,29 +118,54 @@ def adapt_model_for_training(
     ``freeze=None`` means standard adapter-only training because PEFT freezes
     the base model. Supplying ``FreezeConfig`` explicitly identifies base
     parameters that should remain fully trainable after PEFT wraps the model.
+
+    Hybrid LoRA artifacts need two names for each intentionally full-trained
+    base parameter: its original Hugging Face name before PEFT wrapping, and
+    its current PEFT-wrapped name used to retrieve the live tensor later.
+    Parameter identity connects those names without relying on brittle string
+    rewriting.
     """
 
+    base_name_by_id = {
+        id(parameter): name for name, parameter in model.named_parameters()
+    }
+    base_parameter_by_id = {
+        id(parameter): parameter for parameter in model.parameters()
+    }
+
     intended_full_train_ids: set[int] = set()
+    intended_full_train_records: list[tuple[int, str]] = []
     if freeze is not None:
         apply_freeze_policy(model, freeze)
+        intended_full_train_records = [
+            (id(parameter), name)
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        ]
         intended_full_train_ids = {
-            id(parameter) for parameter in model.parameters() if parameter.requires_grad
+            parameter_id for parameter_id, _ in intended_full_train_records
         }
 
     if lora is None:
         summary = summarize_trainable_parameters(model)
+        base_trainable_names = tuple(
+            name
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        )
         return model, ModelAdaptationSummary(
             method=None,
             target_modules=(),
             trainable_parameters=summary.trainable_parameters,
             total_parameters=summary.total_parameters,
             full_train_base_parameters=summary.trainable_parameters,
+            full_train_base_parameter_names=base_trainable_names,
+            full_train_base_wrapped_parameter_names=base_trainable_names,
         )
 
     full_train_base_parameters = sum(
-        parameter.numel()
-        for parameter in model.parameters()
-        if id(parameter) in intended_full_train_ids
+        base_parameter_by_id[parameter_id].numel()
+        for parameter_id, _ in intended_full_train_records
     )
 
     if importlib.util.find_spec("peft") is None:
@@ -167,6 +194,32 @@ def adapt_model_for_training(
 
     _restore_full_train_base_parameters(adapted_model, intended_full_train_ids)
 
+    wrapped_name_by_id = {
+        id(parameter): name
+        for name, parameter in adapted_model.named_parameters()
+    }
+    missing_wrapped_names = [
+        original_name
+        for parameter_id, original_name in intended_full_train_records
+        if parameter_id not in wrapped_name_by_id
+    ]
+    if missing_wrapped_names:
+        preview = ", ".join(missing_wrapped_names[:5])
+        raise RuntimeError(
+            "PEFT wrapping replaced intentionally full-trained base parameters; "
+            "cannot preserve hybrid LoRA artifact identity for: "
+            f"{preview}"
+        )
+
+    full_train_base_parameter_names = tuple(
+        original_name
+        for _, original_name in intended_full_train_records
+    )
+    full_train_base_wrapped_parameter_names = tuple(
+        wrapped_name_by_id[parameter_id]
+        for parameter_id, _ in intended_full_train_records
+    )
+
     trainable_names = [
         name for name, parameter in adapted_model.named_parameters() if parameter.requires_grad
     ]
@@ -180,4 +233,6 @@ def adapt_model_for_training(
         trainable_parameters=summary.trainable_parameters,
         total_parameters=summary.total_parameters,
         full_train_base_parameters=full_train_base_parameters,
+        full_train_base_parameter_names=full_train_base_parameter_names,
+        full_train_base_wrapped_parameter_names=full_train_base_wrapped_parameter_names,
     )

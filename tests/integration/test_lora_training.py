@@ -74,6 +74,14 @@ def snapshot(model, *, trainable: bool) -> dict[str, torch.Tensor]:
     }
 
 
+def hybrid_freeze_config() -> FreezeConfig:
+    return FreezeConfig(
+        train_last_n_layers=1,
+        train_embeddings=False,
+        train_lm_head=False,
+    )
+
+
 def lora_training_config(tmp_path, *, freeze=None) -> TrainingConfig:
     return TrainingConfig(
         output_dir=str(tmp_path),
@@ -158,6 +166,7 @@ def test_real_peft_lora_train_save_adapter_and_offline_merge(tmp_path) -> None:
     assert (adapter_dir / "adapter_config.json").is_file()
     assert (adapter_dir / "adapter_model.safetensors").is_file()
     assert (adapter_dir / "training_config.json").is_file()
+    assert not (adapter_dir / "base_trainable_state.safetensors").exists()
     assert not (adapter_dir / "model.safetensors").exists()
 
     merged_dir = merge_lora(base_dir, adapter_dir, tmp_path / "merged-model")
@@ -180,11 +189,7 @@ def test_real_peft_lora_train_save_adapter_and_offline_merge(tmp_path) -> None:
 def test_freeze_config_restores_explicit_full_train_base_parameters_after_peft() -> None:
     model, summary = adapt_model_for_training(
         build_model(),
-        freeze=FreezeConfig(
-            train_last_n_layers=1,
-            train_embeddings=False,
-            train_lm_head=False,
-        ),
+        freeze=hybrid_freeze_config(),
         lora=LoRAConfig(rank=4, alpha=8),
     )
 
@@ -193,6 +198,14 @@ def test_freeze_config_restores_explicit_full_train_base_parameters_after_peft()
     ]
     assert summary.method == "lora"
     assert summary.full_train_base_parameters > 0
+    assert summary.full_train_base_parameter_names
+    assert len(summary.full_train_base_parameter_names) == len(
+        summary.full_train_base_wrapped_parameter_names
+    )
+    assert all(
+        name.startswith("transformer.h.1.")
+        for name in summary.full_train_base_parameter_names
+    )
     assert any("lora_" in name for name in trainable_names)
     assert any(
         "transformer.h.1" in name and "lora_" not in name
@@ -205,22 +218,73 @@ def test_freeze_config_restores_explicit_full_train_base_parameters_after_peft()
 
 
 @pytest.mark.integration
-def test_adapter_export_rejects_hybrid_lora_until_base_state_artifact_exists(
-    tmp_path,
-) -> None:
+def test_hybrid_lora_saves_base_overrides_and_merges_numerically(tmp_path) -> None:
+    from safetensors.torch import load_file
+
+    base_dir = tmp_path / "hybrid-base-model"
+    build_model().save_pretrained(base_dir, safe_serialization=True)
+
     trainer = Trainer(
-        model=build_model(),
+        model=GPT2LMHeadModel.from_pretrained(base_dir),
         train_dataset=TensorRows(),
         collate_fn=stack_collator,
         config=lora_training_config(
             tmp_path,
-            freeze=FreezeConfig(
-                train_last_n_layers=1,
-                train_embeddings=False,
-                train_lm_head=False,
-            ),
+            freeze=hybrid_freeze_config(),
         ),
     )
 
-    with pytest.raises(NotImplementedError, match="hybrid LoRA"):
-        trainer.save_adapter()
+    model = trainer.accelerator.unwrap_model(trainer.model)
+    full_base_wrapped_names = set(
+        trainer.adaptation_summary.full_train_base_wrapped_parameter_names
+    )
+    full_base_before = {
+        name: parameter.detach().cpu().clone()
+        for name, parameter in model.named_parameters()
+        if name in full_base_wrapped_names
+    }
+    assert full_base_before
+
+    state = trainer.train()
+    assert state.global_step == 2
+
+    full_base_after = {
+        name: parameter.detach().cpu().clone()
+        for name, parameter in model.named_parameters()
+        if name in full_base_wrapped_names
+    }
+    assert any(
+        not torch.equal(full_base_before[name], full_base_after[name])
+        for name in full_base_before
+    )
+
+    fixed_input = torch.tensor([[1, 4, 5, 2]], dtype=torch.long)
+    model.eval()
+    with torch.no_grad():
+        reference_logits = model(input_ids=fixed_input).logits.detach().cpu()
+
+    adapter_dir = trainer.save_adapter()
+    base_state_path = adapter_dir / "base_trainable_state.safetensors"
+    assert (adapter_dir / "adapter_config.json").is_file()
+    assert (adapter_dir / "adapter_model.safetensors").is_file()
+    assert base_state_path.is_file()
+
+    base_state = load_file(str(base_state_path), device="cpu")
+    assert set(base_state) == set(
+        trainer.adaptation_summary.full_train_base_parameter_names
+    )
+    assert base_state
+    assert all(not name.startswith("base_model.") for name in base_state)
+    assert all(".base_layer." not in name for name in base_state)
+
+    merged_dir = merge_lora(
+        base_dir,
+        adapter_dir,
+        tmp_path / "hybrid-merged-model",
+    )
+    merged_model = AutoModelForCausalLM.from_pretrained(merged_dir)
+    merged_model.eval()
+    with torch.no_grad():
+        merged_logits = merged_model(input_ids=fixed_input).logits.detach().cpu()
+
+    torch.testing.assert_close(merged_logits, reference_logits, rtol=1e-5, atol=1e-5)

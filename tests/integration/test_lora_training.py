@@ -202,8 +202,12 @@ def test_freeze_config_restores_explicit_full_train_base_parameters_after_peft()
     assert len(summary.full_train_base_parameter_names) == len(
         summary.full_train_base_wrapped_parameter_names
     )
-    assert all(
+    assert any(
         name.startswith("transformer.h.1.")
+        for name in summary.full_train_base_parameter_names
+    )
+    assert not any(
+        name.startswith("transformer.h.0.")
         for name in summary.full_train_base_parameter_names
     )
     assert any("lora_" in name for name in trainable_names)

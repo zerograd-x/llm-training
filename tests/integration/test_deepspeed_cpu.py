@@ -12,7 +12,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM
 
-from llm_training import merge_lora
+from llm_training import merge_lora, merge_trainable_tokens
 
 
 pytest.importorskip("deepspeed")
@@ -66,6 +66,7 @@ def _assert_offline_merge_matches_worker(
     resume_result: dict,
     output_dir: Path,
     merged_name: str,
+    trainable_tokens: bool = False,
 ) -> None:
     base_dir = Path(resume_result["base_dir"])
     adapter_dir = Path(resume_result["adapter_dir"])
@@ -74,10 +75,11 @@ def _assert_offline_merge_matches_worker(
 
     # The merge runs in the parent pytest process after both DeepSpeed worker
     # processes have exited. It is deliberately outside the distributed engine.
-    merged_dir = merge_lora(base_dir, adapter_dir, output_dir / merged_name)
+    merge_fn = merge_trainable_tokens if trainable_tokens else merge_lora
+    merged_dir = merge_fn(base_dir, adapter_dir, output_dir / merged_name)
     merged_model = AutoModelForCausalLM.from_pretrained(merged_dir)
     merged_model.eval()
-    fixed_input = torch.tensor([[1, 4, 5, 2]], dtype=torch.long)
+    fixed_input = torch.tensor(resume_result["fixed_input"], dtype=torch.long)
     with torch.no_grad():
         merged_logits = merged_model(input_ids=fixed_input).logits.detach().cpu()
 
@@ -177,4 +179,50 @@ def test_real_deepspeed_cpu_hybrid_lora_resume_save_and_offline_merge(
         resume_result=resume_result,
         output_dir=tmp_path,
         merged_name="hybrid-merged-model",
+    )
+
+
+@pytest.mark.integration
+def test_real_deepspeed_cpu_trainable_tokens_resume_save_and_offline_merge(
+    tmp_path: Path,
+) -> None:
+    if importlib.util.find_spec("peft") is None:
+        pytest.skip("PEFT is not installed")
+
+    first = _run_worker("trainable_tokens_interrupt", tmp_path)
+    _assert_success(first)
+
+    first_result = json.loads(
+        (tmp_path / "trainable_tokens_interrupt_result.json").read_text()
+    )
+    assert first_result["global_step"] == 1
+    assert "DeepSpeedEngine" in first_result["engine"]
+    assert first_result["trainable_names"]
+    assert all(
+        "trainable_tokens_delta" in name
+        for name in first_result["trainable_names"]
+    )
+
+    resumed = _run_worker("trainable_tokens_resume", tmp_path)
+    _assert_success(resumed)
+
+    resume_result = json.loads(
+        (tmp_path / "trainable_tokens_resume_result.json").read_text()
+    )
+    assert resume_result["global_step"] == 2
+    assert "DeepSpeedEngine" in resume_result["engine"]
+    assert resume_result["trainable_names"]
+    assert all(
+        "trainable_tokens_delta" in name
+        for name in resume_result["trainable_names"]
+    )
+
+    adapter_dir = Path(resume_result["adapter_dir"])
+    assert not (adapter_dir / "base_trainable_state.safetensors").exists()
+
+    _assert_offline_merge_matches_worker(
+        resume_result=resume_result,
+        output_dir=tmp_path,
+        merged_name="trainable-tokens-merged-model",
+        trainable_tokens=True,
     )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 from torch.utils.data import Dataset
-from transformers import GPT2Config, GPT2LMHeadModel
+from transformers import AutoModelForCausalLM, GPT2Config, GPT2LMHeadModel
 
 from llm_training import (
     CheckpointConfig,
@@ -15,6 +15,7 @@ from llm_training import (
     Trainer,
     TrainingConfig,
     adapt_model_for_training,
+    merge_lora,
 )
 
 
@@ -73,16 +74,14 @@ def snapshot(model, *, trainable: bool) -> dict[str, torch.Tensor]:
     }
 
 
-@pytest.mark.integration
-def test_real_peft_lora_trains_only_adapter_parameters_with_gradient_checkpointing(
-    tmp_path,
-) -> None:
-    config = TrainingConfig(
+def lora_training_config(tmp_path, *, freeze=None) -> TrainingConfig:
+    return TrainingConfig(
         output_dir=str(tmp_path),
         num_epochs=1,
         per_device_batch_size=2,
         seed=123,
         log_every_steps=1,
+        freeze=freeze,
         lora=LoRAConfig(rank=4, alpha=8, dropout=0.0),
         optimizer=OptimizerConfig(learning_rate=1e-2, weight_decay=0.0),
         scheduler=SchedulerConfig(name="linear", warmup_ratio=0.0),
@@ -93,11 +92,17 @@ def test_real_peft_lora_trains_only_adapter_parameters_with_gradient_checkpointi
         checkpoint=CheckpointConfig(save_every_steps=1, keep_last=2),
     )
 
+
+@pytest.mark.integration
+def test_real_peft_lora_train_save_adapter_and_offline_merge(tmp_path) -> None:
+    base_dir = tmp_path / "base-model"
+    build_model().save_pretrained(base_dir, safe_serialization=True)
+
     trainer = Trainer(
-        model=build_model(),
+        model=GPT2LMHeadModel.from_pretrained(base_dir),
         train_dataset=TensorRows(),
         collate_fn=stack_collator,
-        config=config,
+        config=lora_training_config(tmp_path),
     )
 
     assert trainer.adaptation_summary.method == "lora"
@@ -143,7 +148,31 @@ def test_real_peft_lora_trains_only_adapter_parameters_with_gradient_checkpointi
     for name, expected in frozen_before.items():
         torch.testing.assert_close(frozen_after[name], expected, rtol=0, atol=0)
 
-    with pytest.raises(NotImplementedError, match="Adapter-only and merged export"):
+    fixed_input = torch.tensor([[1, 4, 5, 2]], dtype=torch.long)
+    model.eval()
+    with torch.no_grad():
+        reference_logits = model(input_ids=fixed_input).logits.detach().cpu()
+
+    adapter_dir = trainer.save_adapter()
+    assert adapter_dir == tmp_path / "adapter"
+    assert (adapter_dir / "adapter_config.json").is_file()
+    assert (adapter_dir / "adapter_model.safetensors").is_file()
+    assert (adapter_dir / "training_config.json").is_file()
+    assert not (adapter_dir / "model.safetensors").exists()
+
+    merged_dir = merge_lora(base_dir, adapter_dir, tmp_path / "merged-model")
+    assert (merged_dir / "config.json").is_file()
+    assert (merged_dir / "model.safetensors").is_file()
+    assert not (merged_dir / "adapter_config.json").exists()
+
+    merged_model = AutoModelForCausalLM.from_pretrained(merged_dir)
+    merged_model.eval()
+    with torch.no_grad():
+        merged_logits = merged_model(input_ids=fixed_input).logits.detach().cpu()
+
+    torch.testing.assert_close(merged_logits, reference_logits, rtol=1e-5, atol=1e-5)
+
+    with pytest.raises(NotImplementedError, match="separate artifact lifecycle"):
         trainer.export_model()
 
 
@@ -173,3 +202,25 @@ def test_freeze_config_restores_explicit_full_train_base_parameters_after_peft()
         "transformer.h.0" in name and "lora_" not in name
         for name in trainable_names
     )
+
+
+@pytest.mark.integration
+def test_adapter_export_rejects_hybrid_lora_until_base_state_artifact_exists(
+    tmp_path,
+) -> None:
+    trainer = Trainer(
+        model=build_model(),
+        train_dataset=TensorRows(),
+        collate_fn=stack_collator,
+        config=lora_training_config(
+            tmp_path,
+            freeze=FreezeConfig(
+                train_last_n_layers=1,
+                train_embeddings=False,
+                train_lm_head=False,
+            ),
+        ),
+    )
+
+    with pytest.raises(NotImplementedError, match="hybrid LoRA"):
+        trainer.save_adapter()

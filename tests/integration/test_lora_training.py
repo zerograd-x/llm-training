@@ -7,12 +7,14 @@ from transformers import GPT2Config, GPT2LMHeadModel
 
 from llm_training import (
     CheckpointConfig,
+    FreezeConfig,
     GradientCheckpointingConfig,
     LoRAConfig,
     OptimizerConfig,
     SchedulerConfig,
     Trainer,
     TrainingConfig,
+    adapt_model_for_training,
 )
 
 
@@ -143,3 +145,31 @@ def test_real_peft_lora_trains_only_adapter_parameters_with_gradient_checkpointi
 
     with pytest.raises(NotImplementedError, match="Adapter-only and merged export"):
         trainer.export_model()
+
+
+@pytest.mark.integration
+def test_freeze_config_restores_explicit_full_train_base_parameters_after_peft() -> None:
+    model, summary = adapt_model_for_training(
+        build_model(),
+        freeze=FreezeConfig(
+            train_last_n_layers=1,
+            train_embeddings=False,
+            train_lm_head=False,
+        ),
+        lora=LoRAConfig(rank=4, alpha=8),
+    )
+
+    trainable_names = [
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    ]
+    assert summary.method == "lora"
+    assert summary.full_train_base_parameters > 0
+    assert any("lora_" in name for name in trainable_names)
+    assert any(
+        "transformer.h.1" in name and "lora_" not in name
+        for name in trainable_names
+    )
+    assert not any(
+        "transformer.h.0" in name and "lora_" not in name
+        for name in trainable_names
+    )

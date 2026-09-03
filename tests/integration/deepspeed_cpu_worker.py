@@ -13,6 +13,8 @@ from llm_training import (
     DeepSpeedConfig,
     DeepSpeedOptimizerConfig,
     DeepSpeedSchedulerConfig,
+    GradientCheckpointingConfig,
+    LoRAConfig,
     OptimizerConfig,
     SchedulerConfig,
     Trainer,
@@ -59,17 +61,24 @@ def build_model() -> GPT2LMHeadModel:
             n_head=1,
             bos_token_id=1,
             eos_token_id=2,
+            use_cache=True,
         )
     )
 
 
-def build_config(output_dir: Path, *, resume_from: str | None = None) -> TrainingConfig:
+def build_config(
+    output_dir: Path,
+    *,
+    resume_from: str | None = None,
+    lora: bool = False,
+) -> TrainingConfig:
     return TrainingConfig(
         output_dir=str(output_dir),
         num_epochs=1,
         per_device_batch_size=2,
         seed=123,
         log_every_steps=1,
+        lora=LoRAConfig(rank=4, alpha=8, dropout=0.0) if lora else None,
         optimizer=OptimizerConfig(
             learning_rate=1e-3,
             weight_decay=0.0,
@@ -78,12 +87,14 @@ def build_config(output_dir: Path, *, resume_from: str | None = None) -> Trainin
             eps=1e-8,
         ),
         scheduler=SchedulerConfig(name="linear", warmup_steps=1),
+        gradient_checkpointing=GradientCheckpointingConfig(
+            enabled=lora,
+            use_reentrant=False if lora else None,
+        ),
         deepspeed=DeepSpeedConfig(
             zero_stage=2,
             optimizer=DeepSpeedOptimizerConfig(
                 type="AdamW",
-                # Keep this CPU integration test on the PyTorch AdamW code path
-                # instead of compiling DeepSpeed's fused CUDA Adam extension.
                 params={"torch_adam": True},
             ),
             scheduler=DeepSpeedSchedulerConfig(type="WarmupDecayLR"),
@@ -108,17 +119,28 @@ class InterruptAfterFirstCheckpointTrainer(Trainer):
         return checkpoint_dir
 
 
-def run_interrupt(output_dir: Path) -> None:
+def _trainable_names(trainer: Trainer) -> list[str]:
+    model = trainer.accelerator.unwrap_model(trainer.model)
+    return [
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    ]
+
+
+def run_interrupt(output_dir: Path, *, lora: bool = False) -> None:
     trainer = InterruptAfterFirstCheckpointTrainer(
         model=build_model(),
         train_dataset=TensorRows(),
         collate_fn=stack_collator,
-        config=build_config(output_dir),
+        config=build_config(output_dir, lora=lora),
     )
 
     engine_name = type(trainer.model).__name__
     optimizer_name = type(trainer.optimizer).__name__
     scheduler_name = type(trainer.scheduler).__name__
+    trainable_names = _trainable_names(trainer)
+    if lora:
+        assert trainable_names
+        assert all("lora_" in name for name in trainable_names)
 
     try:
         trainer.train()
@@ -133,13 +155,15 @@ def run_interrupt(output_dir: Path) -> None:
     checkpoint = output_dir / "checkpoint-00000001"
     assert (checkpoint / "trainer_state.json").is_file()
 
-    (output_dir / "interrupt_result.json").write_text(
+    result_name = "lora_interrupt_result.json" if lora else "interrupt_result.json"
+    (output_dir / result_name).write_text(
         json.dumps(
             {
                 "global_step": trainer.state.global_step,
                 "engine": engine_name,
                 "optimizer": optimizer_name,
                 "scheduler": scheduler_name,
+                "trainable_names": trainable_names,
             },
             indent=2,
         )
@@ -147,17 +171,21 @@ def run_interrupt(output_dir: Path) -> None:
     )
 
 
-def run_resume(output_dir: Path) -> None:
+def run_resume(output_dir: Path, *, lora: bool = False) -> None:
     trainer = Trainer(
         model=build_model(),
         train_dataset=TensorRows(),
         collate_fn=stack_collator,
-        config=build_config(output_dir, resume_from="latest"),
+        config=build_config(output_dir, resume_from="latest", lora=lora),
     )
 
     assert trainer.state.global_step == 1
     assert trainer.state.epoch == 0
     assert trainer.state.batch_in_epoch == 1
+    trainable_names = _trainable_names(trainer)
+    if lora:
+        assert trainable_names
+        assert all("lora_" in name for name in trainable_names)
 
     state = trainer.train()
     assert state.global_step == 2
@@ -165,21 +193,24 @@ def run_resume(output_dir: Path) -> None:
     assert state.batch_in_epoch == 0
     assert (output_dir / "checkpoint-00000002" / "trainer_state.json").is_file()
 
-    trainer.export_model()
-    final_model = output_dir / "final-model"
-    assert (final_model / "config.json").is_file()
-    assert any(
-        (final_model / filename).is_file()
-        for filename in ("model.safetensors", "pytorch_model.bin")
-    )
+    if not lora:
+        trainer.export_model()
+        final_model = output_dir / "final-model"
+        assert (final_model / "config.json").is_file()
+        assert any(
+            (final_model / filename).is_file()
+            for filename in ("model.safetensors", "pytorch_model.bin")
+        )
 
-    (output_dir / "resume_result.json").write_text(
+    result_name = "lora_resume_result.json" if lora else "resume_result.json"
+    (output_dir / result_name).write_text(
         json.dumps(
             {
                 "global_step": state.global_step,
                 "engine": type(trainer.model).__name__,
                 "optimizer": type(trainer.optimizer).__name__,
                 "scheduler": type(trainer.scheduler).__name__,
+                "trainable_names": trainable_names,
             },
             indent=2,
         )
@@ -189,7 +220,10 @@ def run_resume(output_dir: Path) -> None:
 
 def main() -> None:
     if len(sys.argv) != 3:
-        raise SystemExit("usage: deepspeed_cpu_worker.py <interrupt|resume> <output-dir>")
+        raise SystemExit(
+            "usage: deepspeed_cpu_worker.py "
+            "<interrupt|resume|lora_interrupt|lora_resume> <output-dir>"
+        )
     mode = sys.argv[1]
     output_dir = Path(sys.argv[2])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -198,6 +232,10 @@ def main() -> None:
         run_interrupt(output_dir)
     elif mode == "resume":
         run_resume(output_dir)
+    elif mode == "lora_interrupt":
+        run_interrupt(output_dir, lora=True)
+    elif mode == "lora_resume":
+        run_resume(output_dir, lora=True)
     else:
         raise SystemExit(f"unknown mode: {mode}")
 

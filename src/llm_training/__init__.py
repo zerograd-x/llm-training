@@ -32,6 +32,12 @@ from .config import (
     TrainingConfig,
 )
 from .data import adapt_column_batch_collator, rows_to_column_batch
+from .distributed import (
+    DistributedRuntime,
+    MaterializationScope,
+    active_world_size,
+    require_single_process,
+)
 from .freeze import FreezeSummary, apply_freeze_policy, summarize_trainable_parameters
 from .loss import (
     IGNORE_INDEX,
@@ -57,12 +63,14 @@ __all__ = [
     "DeepSpeedOptimizerConfig",
     "DeepSpeedSchedulerConfig",
     "DefaultCrossEntropyLoss",
+    "DistributedRuntime",
     "FreezeConfig",
     "FreezeSummary",
     "GradientCheckpointingConfig",
     "IGNORE_INDEX",
     "LoRAConfig",
     "LossConfig",
+    "MaterializationScope",
     "ModelAdaptationSummary",
     "OptimizerConfig",
     "SchedulerConfig",
@@ -70,6 +78,7 @@ __all__ = [
     "Trainer",
     "TrainerState",
     "TrainingConfig",
+    "active_world_size",
     "adapt_column_batch_collator",
     "adapt_model_for_training",
     "apply_freeze_policy",
@@ -84,6 +93,7 @@ __all__ = [
     "load_training_checkpoint",
     "merge_lora",
     "merge_trainable_tokens",
+    "require_single_process",
     "resolve_trainable_token_ids",
     "rows_to_column_batch",
     "save_causal_lm",

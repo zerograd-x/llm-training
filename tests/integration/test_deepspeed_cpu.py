@@ -9,6 +9,10 @@ import subprocess
 import sys
 
 import pytest
+import torch
+from transformers import AutoModelForCausalLM
+
+from llm_training import merge_lora
 
 
 pytest.importorskip("deepspeed")
@@ -79,7 +83,9 @@ def test_real_deepspeed_cpu_train_resume_and_export(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-def test_real_deepspeed_cpu_lora_train_checkpoint_and_resume(tmp_path: Path) -> None:
+def test_real_deepspeed_cpu_lora_resume_save_adapter_and_offline_merge(
+    tmp_path: Path,
+) -> None:
     if importlib.util.find_spec("peft") is None:
         pytest.skip("PEFT is not installed")
 
@@ -100,3 +106,20 @@ def test_real_deepspeed_cpu_lora_train_checkpoint_and_resume(tmp_path: Path) -> 
     assert "DeepSpeedEngine" in resume_result["engine"]
     assert resume_result["trainable_names"]
     assert all("lora_" in name for name in resume_result["trainable_names"])
+
+    base_dir = Path(resume_result["base_dir"])
+    adapter_dir = Path(resume_result["adapter_dir"])
+    assert (adapter_dir / "adapter_config.json").is_file()
+    assert (adapter_dir / "adapter_model.safetensors").is_file()
+
+    # This merge runs in the parent pytest process, after both DeepSpeed worker
+    # processes have exited. It is deliberately outside the distributed engine.
+    merged_dir = merge_lora(base_dir, adapter_dir, tmp_path / "merged-model")
+    merged_model = AutoModelForCausalLM.from_pretrained(merged_dir)
+    merged_model.eval()
+    fixed_input = torch.tensor([[1, 4, 5, 2]], dtype=torch.long)
+    with torch.no_grad():
+        merged_logits = merged_model(input_ids=fixed_input).logits.detach().cpu()
+
+    reference_logits = torch.tensor(resume_result["reference_logits"])
+    torch.testing.assert_close(merged_logits, reference_logits, rtol=1e-5, atol=1e-5)

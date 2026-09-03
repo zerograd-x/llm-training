@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -75,3 +76,27 @@ def test_real_deepspeed_cpu_train_resume_and_export(tmp_path: Path) -> None:
     assert "DeepSpeedEngine" in resume_result["engine"]
     assert "DeepSpeedOptimizerWrapper" in resume_result["optimizer"]
     assert "DeepSpeedSchedulerWrapper" in resume_result["scheduler"]
+
+
+@pytest.mark.integration
+def test_real_deepspeed_cpu_lora_train_checkpoint_and_resume(tmp_path: Path) -> None:
+    if importlib.util.find_spec("peft") is None:
+        pytest.skip("PEFT is not installed")
+
+    first = _run_worker("lora_interrupt", tmp_path)
+    _assert_success(first)
+
+    first_result = json.loads((tmp_path / "lora_interrupt_result.json").read_text())
+    assert first_result["global_step"] == 1
+    assert "DeepSpeedEngine" in first_result["engine"]
+    assert first_result["trainable_names"]
+    assert all("lora_" in name for name in first_result["trainable_names"])
+
+    resumed = _run_worker("lora_resume", tmp_path)
+    _assert_success(resumed)
+
+    resume_result = json.loads((tmp_path / "lora_resume_result.json").read_text())
+    assert resume_result["global_step"] == 2
+    assert "DeepSpeedEngine" in resume_result["engine"]
+    assert resume_result["trainable_names"]
+    assert all("lora_" in name for name in resume_result["trainable_names"])

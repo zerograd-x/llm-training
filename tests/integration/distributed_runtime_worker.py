@@ -11,7 +11,15 @@ from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
 from transformers import GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
 
-from llm_training import DistributedRuntime, TrainingConfig, require_single_process
+from llm_training import (
+    CheckpointConfig,
+    DistributedRuntime,
+    OptimizerConfig,
+    SchedulerConfig,
+    Trainer,
+    TrainingConfig,
+    require_single_process,
+)
 
 
 class IdDataset(Dataset):
@@ -20,6 +28,38 @@ class IdDataset(Dataset):
 
     def __getitem__(self, index: int) -> torch.Tensor:
         return torch.tensor(index, dtype=torch.long)
+
+
+class TinyLMDataset(Dataset):
+    def __init__(self) -> None:
+        self.rows = [
+            torch.tensor([1, 3, 4, 1], dtype=torch.long),
+            torch.tensor([1, 4, 5, 1], dtype=torch.long),
+            torch.tensor([1, 5, 6, 1], dtype=torch.long),
+            torch.tensor([1, 6, 7, 1], dtype=torch.long),
+            torch.tensor([1, 7, 3, 1], dtype=torch.long),
+            torch.tensor([1, 3, 5, 1], dtype=torch.long),
+            torch.tensor([1, 4, 6, 1], dtype=torch.long),
+            torch.tensor([1, 5, 7, 1], dtype=torch.long),
+        ]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        input_ids = self.rows[index]
+        return {
+            "input_ids": input_ids,
+            "attention_mask": torch.ones_like(input_ids),
+            "labels": input_ids.clone(),
+        }
+
+
+def stack_collator(rows: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+    return {
+        key: torch.stack([row[key] for row in rows])
+        for key in rows[0]
+    }
 
 
 def build_local_hf_artifact(destination: Path, *, owner_rank: int) -> None:
@@ -68,7 +108,15 @@ def main() -> None:
 
     root = Path(sys.argv[1])
     root.mkdir(parents=True, exist_ok=True)
-    config = TrainingConfig(output_dir=str(root / "training"))
+    config = TrainingConfig(
+        output_dir=str(root / "training"),
+        num_epochs=1,
+        per_device_batch_size=2,
+        log_every_steps=1,
+        optimizer=OptimizerConfig(learning_rate=1e-2, weight_decay=0.0),
+        scheduler=SchedulerConfig(name="linear", warmup_ratio=0.0),
+        checkpoint=CheckpointConfig(save_every_steps=None, keep_last=1),
+    )
     runtime = DistributedRuntime(config)
 
     model_dir = root / "node-local-model"
@@ -89,6 +137,17 @@ def main() -> None:
     seen_ids: list[int] = []
     for batch in prepared_loader:
         seen_ids.extend(int(value) for value in batch.detach().cpu().tolist())
+
+    trainer = Trainer(
+        model=components.model,
+        tokenizer=components.tokenizer,
+        train_dataset=TinyLMDataset(),
+        collate_fn=stack_collator,
+        config=config,
+        runtime=runtime,
+    )
+    state = trainer.train()
+    final_lr = float(trainer.optimizer.param_groups[0]["lr"])
 
     if runtime.is_main_process:
         (root / "global-main.txt").write_text(f"{runtime.process_index}\n")
@@ -111,6 +170,8 @@ def main() -> None:
         "is_local_main_process": runtime.is_local_main_process,
         "seen_ids": seen_ids,
         "parameter_count": parameter_count,
+        "global_step": state.global_step,
+        "final_lr": final_lr,
         "driver_guard_error": driver_guard_error,
     }
     (root / f"rank-{runtime.process_index}.json").write_text(

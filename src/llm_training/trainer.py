@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 from transformers import PreTrainedTokenizerBase
 
 from .adapters import ModelAdaptationSummary, adapt_model_for_training
-from .artifacts import save_lora_adapter
+from .artifacts import save_lora_adapter, save_trainable_tokens_adapter
 from .backend import build_accelerator, configure_gradient_checkpointing
 from .checkpoint import (
     TrainerState,
@@ -86,10 +86,12 @@ class Trainer:
                 "Trainer scheduler injection cannot be combined with a "
                 "DeepSpeed-owned scheduler"
             )
-        if optimizer is not None and config.lora is not None:
+        if optimizer is not None and (
+            config.lora is not None or config.trainable_tokens is not None
+        ):
             raise ValueError(
-                "Trainer optimizer injection cannot be combined with config.lora: "
-                "LoRA parameters are created inside Trainer before optimizer construction"
+                "Trainer optimizer injection cannot be combined with PEFT adaptation: "
+                "adapter parameters are created inside Trainer before optimizer construction"
             )
 
         self.config = config
@@ -105,11 +107,15 @@ class Trainer:
             model,
             freeze=config.freeze,
             lora=config.lora,
+            trainable_tokens=config.trainable_tokens,
+        )
+        adapter_training = (
+            config.lora is not None or config.trainable_tokens is not None
         )
         configure_gradient_checkpointing(
             model,
             config.gradient_checkpointing,
-            require_input_grads=config.lora is not None,
+            require_input_grads=adapter_training,
         )
 
         self._sampler = EpochSeededRandomSampler(train_dataset, seed=config.seed)
@@ -243,19 +249,28 @@ class Trainer:
         )
 
     def save_adapter(self, output_dir: str | Path | None = None) -> Path:
-        """Save a pure-LoRA PEFT artifact without consolidating the base model."""
+        """Save the configured PEFT adapter without consolidating the base model."""
 
-        if self.config.lora is None:
-            raise ValueError("save_adapter() requires config.lora")
         destination = Path(output_dir or self.config.output_dir) / "adapter"
-        return save_lora_adapter(
-            self.model,
-            accelerator=self.accelerator,
-            output_dir=destination,
-            config=self.config,
-            adaptation_summary=self.adaptation_summary,
-            tokenizer=self.tokenizer,
-        )
+        if self.config.lora is not None:
+            return save_lora_adapter(
+                self.model,
+                accelerator=self.accelerator,
+                output_dir=destination,
+                config=self.config,
+                adaptation_summary=self.adaptation_summary,
+                tokenizer=self.tokenizer,
+            )
+        if self.config.trainable_tokens is not None:
+            return save_trainable_tokens_adapter(
+                self.model,
+                accelerator=self.accelerator,
+                output_dir=destination,
+                config=self.config,
+                adaptation_summary=self.adaptation_summary,
+                tokenizer=self.tokenizer,
+            )
+        raise ValueError("save_adapter() requires a configured PEFT adaptation method")
 
     def export_model(self, output_dir: str | Path | None = None) -> None:
         if self.config.lora is not None:
@@ -263,6 +278,12 @@ class Trainer:
                 "LoRA uses a separate artifact lifecycle: call save_adapter() "
                 "during/after training, then merge_lora(base, adapter, output) "
                 "offline to produce a plain Hugging Face checkpoint."
+            )
+        if self.config.trainable_tokens is not None:
+            raise NotImplementedError(
+                "TrainableTokens uses a separate artifact lifecycle: call "
+                "save_adapter() during/after training, then "
+                "merge_trainable_tokens(expanded_base, adapter, output) offline."
             )
 
         destination = Path(output_dir or self.config.output_dir) / "final-model"

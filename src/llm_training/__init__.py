@@ -3,6 +3,7 @@ from .adapters import (
     adapt_model_for_training,
     discover_lora_target_modules,
 )
+from .artifacts import merge_lora, save_lora_adapter
 from .checkpoint import (
     TrainerState,
     find_latest_checkpoint,
@@ -71,8 +72,10 @@ __all__ = [
     "load_causal_lm",
     "load_loss",
     "load_training_checkpoint",
+    "merge_lora",
     "rows_to_column_batch",
     "save_causal_lm",
+    "save_lora_adapter",
     "save_training_checkpoint",
     "shift_causal_labels",
     "summarize_trainable_parameters",

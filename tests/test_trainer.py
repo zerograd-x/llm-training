@@ -9,6 +9,7 @@ from torch.utils.data import Dataset
 from llm_training import (
     BaseLoss,
     CheckpointConfig,
+    DistributedRuntime,
     LossConfig,
     OptimizerConfig,
     SchedulerConfig,
@@ -106,6 +107,36 @@ def test_trainer_runs_and_saves_checkpoint(tmp_path) -> None:
     latest = find_latest_checkpoint(tmp_path)
     assert latest is not None
     assert latest.name == "checkpoint-00000002"
+
+
+def test_trainer_reuses_explicit_distributed_runtime(tmp_path) -> None:
+    config = build_config(tmp_path)
+    runtime = DistributedRuntime(config)
+    trainer = Trainer(
+        model=TinyLM(),
+        train_dataset=TinyDataset(),
+        collate_fn=stack_collator,
+        config=config,
+        runtime=runtime,
+    )
+
+    assert trainer.runtime is runtime
+    assert trainer.accelerator is runtime.accelerator
+
+
+def test_trainer_rejects_runtime_built_from_different_config(tmp_path) -> None:
+    runtime_config = build_config(tmp_path / "runtime")
+    trainer_config = build_config(tmp_path / "trainer")
+    runtime = DistributedRuntime(runtime_config)
+
+    with pytest.raises(ValueError, match="must match"):
+        Trainer(
+            model=TinyLM(),
+            train_dataset=TinyDataset(),
+            collate_fn=stack_collator,
+            config=trainer_config,
+            runtime=runtime,
+        )
 
 
 def test_trainer_uses_runtime_custom_loss(tmp_path) -> None:

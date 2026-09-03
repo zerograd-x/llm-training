@@ -22,7 +22,7 @@ _BASE_TRAINABLE_STATE_FILENAME = "base_trainable_state.safetensors"
 def _require_peft() -> None:
     if importlib.util.find_spec("peft") is None:
         raise ImportError(
-            "PEFT is required for LoRA artifacts. "
+            "PEFT is required for adapter artifacts. "
             "Install llm-training with the 'peft' extra."
         )
 
@@ -41,6 +41,35 @@ def _unique_parameters(parameters: list[nn.Parameter]) -> list[nn.Parameter]:
         seen.add(parameter_id)
         unique.append(parameter)
     return unique
+
+
+def _zero3_gather_context(
+    parameters: list[nn.Parameter],
+    config: TrainingConfig,
+):
+    if config.deepspeed is None or config.deepspeed.zero_stage != 3:
+        return nullcontext()
+
+    import deepspeed
+
+    return deepspeed.zero.GatheredParameters(
+        _unique_parameters(parameters),
+        modifier_rank=0,
+    )
+
+
+def _write_adapter_metadata(
+    *,
+    artifact_dir: Path,
+    config: TrainingConfig,
+    tokenizer: PreTrainedTokenizerBase | None,
+) -> None:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "training_config.json").write_text(
+        json.dumps(config.to_dict(), indent=2, sort_keys=True) + "\n"
+    )
+    if tokenizer is not None:
+        tokenizer.save_pretrained(artifact_dir)
 
 
 def _resolve_lora_artifact_parameters(
@@ -114,18 +143,7 @@ def save_lora_adapter(
     adaptation_summary: ModelAdaptationSummary,
     tokenizer: PreTrainedTokenizerBase | None = None,
 ) -> Path:
-    """Save a PEFT LoRA artifact without consolidating the full base model.
-
-    Pure LoRA writes the standard PEFT adapter files. Hybrid LoRA additionally
-    writes ``base_trainable_state.safetensors`` containing only the base-model
-    parameters intentionally full-trained through ``FreezeConfig``. Those keys
-    use the original Hugging Face parameter names from before PEFT wrapping.
-
-    This function is safe to call from all distributed ranks. Under ZeRO-3 it
-    gathers only the LoRA parameters plus hybrid base overrides required for
-    serialization; it never asks Accelerate/DeepSpeed to materialize the full
-    base-model state dict.
-    """
+    """Save a PEFT LoRA artifact without consolidating the full base model."""
 
     _require_peft()
     if config.lora is None or adaptation_summary.method != "lora":
@@ -151,18 +169,9 @@ def save_lora_adapter(
         adapter_parameters + [parameter for _, parameter in base_entries]
     )
 
-    gather_context = nullcontext()
-    if config.deepspeed is not None and config.deepspeed.zero_stage == 3:
-        import deepspeed
-
-        gather_context = deepspeed.zero.GatheredParameters(
-            parameters_to_gather,
-            modifier_rank=0,
-        )
-
     adapter_state: dict[str, Any] | None = None
     base_state: dict[str, torch.Tensor] | None = None
-    with gather_context:
+    with _zero3_gather_context(parameters_to_gather, config):
         if accelerator.is_main_process:
             state = get_peft_model_state_dict(
                 unwrapped,
@@ -190,12 +199,11 @@ def save_lora_adapter(
             safe_serialization=True,
             is_main_process=True,
         )
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        (artifact_dir / "training_config.json").write_text(
-            json.dumps(config.to_dict(), indent=2, sort_keys=True) + "\n"
+        _write_adapter_metadata(
+            artifact_dir=artifact_dir,
+            config=config,
+            tokenizer=tokenizer,
         )
-        if tokenizer is not None:
-            tokenizer.save_pretrained(artifact_dir)
 
         base_state_path = artifact_dir / _BASE_TRAINABLE_STATE_FILENAME
         if base_state:
@@ -207,8 +215,104 @@ def save_lora_adapter(
                 metadata={"format": "llm-training-hybrid-lora-base-state-v1"},
             )
         elif base_state_path.exists():
-            # Do not let a stale hybrid artifact contaminate a later pure-LoRA save.
             base_state_path.unlink()
+
+    accelerator.wait_for_everyone()
+    return artifact_dir
+
+
+def _trainable_tokens_parameters(model: nn.Module) -> list[nn.Parameter]:
+    trainable: list[nn.Parameter] = []
+    unexpected: list[str] = []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if "trainable_tokens_delta" in name:
+            trainable.append(parameter)
+        else:
+            unexpected.append(name)
+
+    if unexpected:
+        preview = ", ".join(unexpected[:5])
+        raise RuntimeError(
+            "Standalone TrainableTokens artifact export expected only token-delta "
+            f"parameters to be trainable, found: {preview}"
+        )
+    if not trainable:
+        raise RuntimeError("TrainableTokens model has no trainable token-delta parameters")
+    return _unique_parameters(trainable)
+
+
+def save_trainable_tokens_adapter(
+    model: nn.Module,
+    *,
+    accelerator: Accelerator,
+    output_dir: str | Path,
+    config: TrainingConfig,
+    adaptation_summary: ModelAdaptationSummary,
+    tokenizer: PreTrainedTokenizerBase | None = None,
+) -> Path:
+    """Save a compact standalone PEFT TrainableTokens artifact.
+
+    The resized base embedding matrix is deliberately *not* serialized. PEFT's
+    default ``save_embedding_layers='auto'`` can save the full embedding matrix
+    after a vocabulary resize, which defeats partial-token training. This path
+    forces ``save_embedding_layers=False`` and saves only TrainableTokens state.
+
+    Under ZeRO-3 only the trainable token-delta parameters are gathered for
+    serialization. Real multi-rank ZeRO-3 behavior remains a separate runtime
+    validation item.
+    """
+
+    _require_peft()
+    if (
+        config.trainable_tokens is None
+        or adaptation_summary.method != "trainable_tokens"
+    ):
+        raise ValueError(
+            "save_trainable_tokens_adapter requires a TrainableTokens-adapted model"
+        )
+
+    from peft import PeftModel, get_peft_model_state_dict
+
+    unwrapped = accelerator.unwrap_model(model)
+    if not isinstance(unwrapped, PeftModel):
+        raise TypeError("Expected accelerator.unwrap_model(model) to be a PeftModel")
+
+    adapter_name = config.trainable_tokens.adapter_name
+    adapter_parameters = _trainable_tokens_parameters(unwrapped)
+
+    adapter_state: dict[str, Any] | None = None
+    with _zero3_gather_context(adapter_parameters, config):
+        if accelerator.is_main_process:
+            state = get_peft_model_state_dict(
+                unwrapped,
+                adapter_name=adapter_name,
+                save_embedding_layers=False,
+            )
+            adapter_state = {
+                name: tensor.detach().cpu().clone().contiguous()
+                for name, tensor in state.items()
+            }
+
+    root = Path(output_dir)
+    artifact_dir = _adapter_output_dir(root, adapter_name)
+    if accelerator.is_main_process:
+        root.mkdir(parents=True, exist_ok=True)
+        assert adapter_state is not None
+        unwrapped.save_pretrained(
+            root,
+            selected_adapters=[adapter_name],
+            state_dict=adapter_state,
+            safe_serialization=True,
+            save_embedding_layers=False,
+            is_main_process=True,
+        )
+        _write_adapter_metadata(
+            artifact_dir=artifact_dir,
+            config=config,
+            tokenizer=tokenizer,
+        )
 
     accelerator.wait_for_everyone()
     return artifact_dir
@@ -234,7 +338,6 @@ def _tokenizer_source(
             return base_path
         return None
 
-    # A non-local string is assumed to be a Hugging Face model/tokenizer id.
     return base_model_name_or_path
 
 
@@ -282,44 +385,16 @@ def _apply_base_trainable_state(model: nn.Module, adapter_path: Path) -> None:
             )
 
 
-def merge_lora(
-    base_model_name_or_path: str | Path,
-    adapter_path: str | Path,
-    output_dir: str | Path,
+def _save_merged_model(
+    merged_model: nn.Module,
     *,
-    model_kwargs: dict[str, Any] | None = None,
-    tokenizer_name_or_path: str | Path | None = None,
-    tokenizer_kwargs: dict[str, Any] | None = None,
-    safe_serialization: bool = True,
+    destination: Path,
+    base_model_name_or_path: str | Path,
+    adapter_path: Path,
+    tokenizer_name_or_path: str | Path | None,
+    tokenizer_kwargs: dict[str, Any] | None,
+    safe_serialization: bool,
 ) -> Path:
-    """Offline-merge a LoRA artifact into its exact base model.
-
-    The merge intentionally runs outside the distributed training lifecycle.
-    For hybrid LoRA, full-trained base overrides are restored first. The PEFT
-    adapter is then attached and ``merge_and_unload()`` folds the LoRA delta
-    into those restored base weights. The result is a plain Hugging Face model
-    that no longer requires PEFT at inference time.
-    """
-
-    _require_peft()
-    from peft import PeftModel
-
-    adapter_path = Path(adapter_path)
-    if not (adapter_path / "adapter_config.json").is_file():
-        raise FileNotFoundError(
-            f"Missing PEFT adapter config: {adapter_path / 'adapter_config.json'}"
-        )
-
-    base_model = AutoModelForCausalLM.from_pretrained(
-        base_model_name_or_path,
-        **(model_kwargs or {}),
-    )
-    _apply_base_trainable_state(base_model, adapter_path)
-
-    peft_model = PeftModel.from_pretrained(base_model, adapter_path)
-    merged_model = peft_model.merge_and_unload()
-
-    destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     merged_model.save_pretrained(
         destination,
@@ -338,11 +413,111 @@ def merge_lora(
         )
         tokenizer.save_pretrained(destination)
 
-    # Preserve generic training metadata without making it part of the HF model
-    # loading contract. Storage- or application-specific sidecars stay outside
-    # llm-training.
     training_config = adapter_path / "training_config.json"
     if training_config.is_file():
         shutil.copy2(training_config, destination / training_config.name)
 
     return destination
+
+
+def merge_lora(
+    base_model_name_or_path: str | Path,
+    adapter_path: str | Path,
+    output_dir: str | Path,
+    *,
+    model_kwargs: dict[str, Any] | None = None,
+    tokenizer_name_or_path: str | Path | None = None,
+    tokenizer_kwargs: dict[str, Any] | None = None,
+    safe_serialization: bool = True,
+) -> Path:
+    """Offline-merge a LoRA artifact into its exact base model."""
+
+    _require_peft()
+    from peft import PeftModel
+
+    adapter_path = Path(adapter_path)
+    if not (adapter_path / "adapter_config.json").is_file():
+        raise FileNotFoundError(
+            f"Missing PEFT adapter config: {adapter_path / 'adapter_config.json'}"
+        )
+
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_name_or_path,
+        **(model_kwargs or {}),
+    )
+    _apply_base_trainable_state(base_model, adapter_path)
+
+    peft_model = PeftModel.from_pretrained(base_model, adapter_path)
+    merged_model = peft_model.merge_and_unload()
+    return _save_merged_model(
+        merged_model,
+        destination=Path(output_dir),
+        base_model_name_or_path=base_model_name_or_path,
+        adapter_path=adapter_path,
+        tokenizer_name_or_path=tokenizer_name_or_path,
+        tokenizer_kwargs=tokenizer_kwargs,
+        safe_serialization=safe_serialization,
+    )
+
+
+def merge_trainable_tokens(
+    base_model_name_or_path: str | Path,
+    adapter_path: str | Path,
+    output_dir: str | Path,
+    *,
+    model_kwargs: dict[str, Any] | None = None,
+    tokenizer_name_or_path: str | Path | None = None,
+    tokenizer_kwargs: dict[str, Any] | None = None,
+    safe_serialization: bool = True,
+) -> Path:
+    """Offline-merge TrainableTokens into the exact vocabulary-expanded base.
+
+    ``base_model_name_or_path`` must identify the same resized base checkpoint
+    used for training. The small TrainableTokens adapter replaces only the
+    selected token rows during ``merge_and_unload()`` and the result is saved as
+    an ordinary Hugging Face causal-LM checkpoint.
+    """
+
+    _require_peft()
+    from peft import PeftConfig, PeftModel
+
+    adapter_path = Path(adapter_path)
+    if not (adapter_path / "adapter_config.json").is_file():
+        raise FileNotFoundError(
+            f"Missing PEFT adapter config: {adapter_path / 'adapter_config.json'}"
+        )
+
+    peft_config = PeftConfig.from_pretrained(adapter_path)
+    if str(peft_config.peft_type).split(".")[-1] != "TRAINABLE_TOKENS":
+        raise ValueError(
+            "merge_trainable_tokens requires a PEFT TRAINABLE_TOKENS adapter, "
+            f"got {peft_config.peft_type}"
+        )
+
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_name_or_path,
+        **(model_kwargs or {}),
+    )
+    embedding = base_model.get_input_embeddings()
+    vocab_size = int(embedding.weight.shape[0])
+    token_indices = tuple(int(index) for index in peft_config.token_indices)
+    if not token_indices:
+        raise ValueError("TrainableTokens adapter contains no token indices")
+    if min(token_indices) < 0 or max(token_indices) >= vocab_size:
+        raise ValueError(
+            "The supplied base model is not the vocabulary-expanded base used "
+            f"for training: adapter token ids reach {max(token_indices)}, but "
+            f"base vocabulary size is {vocab_size}"
+        )
+
+    peft_model = PeftModel.from_pretrained(base_model, adapter_path)
+    merged_model = peft_model.merge_and_unload()
+    return _save_merged_model(
+        merged_model,
+        destination=Path(output_dir),
+        base_model_name_or_path=base_model_name_or_path,
+        adapter_path=adapter_path,
+        tokenizer_name_or_path=tokenizer_name_or_path,
+        tokenizer_kwargs=tokenizer_kwargs,
+        safe_serialization=safe_serialization,
+    )

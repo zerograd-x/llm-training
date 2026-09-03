@@ -61,6 +61,30 @@ def _assert_success(result: subprocess.CompletedProcess[str]) -> None:
     )
 
 
+def _assert_offline_merge_matches_worker(
+    *,
+    resume_result: dict,
+    output_dir: Path,
+    merged_name: str,
+) -> None:
+    base_dir = Path(resume_result["base_dir"])
+    adapter_dir = Path(resume_result["adapter_dir"])
+    assert (adapter_dir / "adapter_config.json").is_file()
+    assert (adapter_dir / "adapter_model.safetensors").is_file()
+
+    # The merge runs in the parent pytest process after both DeepSpeed worker
+    # processes have exited. It is deliberately outside the distributed engine.
+    merged_dir = merge_lora(base_dir, adapter_dir, output_dir / merged_name)
+    merged_model = AutoModelForCausalLM.from_pretrained(merged_dir)
+    merged_model.eval()
+    fixed_input = torch.tensor([[1, 4, 5, 2]], dtype=torch.long)
+    with torch.no_grad():
+        merged_logits = merged_model(input_ids=fixed_input).logits.detach().cpu()
+
+    reference_logits = torch.tensor(resume_result["reference_logits"])
+    torch.testing.assert_close(merged_logits, reference_logits, rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.integration
 def test_real_deepspeed_cpu_train_resume_and_export(tmp_path: Path) -> None:
     first = _run_worker("interrupt", tmp_path)
@@ -106,20 +130,51 @@ def test_real_deepspeed_cpu_lora_resume_save_adapter_and_offline_merge(
     assert "DeepSpeedEngine" in resume_result["engine"]
     assert resume_result["trainable_names"]
     assert all("lora_" in name for name in resume_result["trainable_names"])
+    assert not (
+        Path(resume_result["adapter_dir"]) / "base_trainable_state.safetensors"
+    ).exists()
 
-    base_dir = Path(resume_result["base_dir"])
+    _assert_offline_merge_matches_worker(
+        resume_result=resume_result,
+        output_dir=tmp_path,
+        merged_name="merged-model",
+    )
+
+
+@pytest.mark.integration
+def test_real_deepspeed_cpu_hybrid_lora_resume_save_and_offline_merge(
+    tmp_path: Path,
+) -> None:
+    if importlib.util.find_spec("peft") is None:
+        pytest.skip("PEFT is not installed")
+
+    first = _run_worker("hybrid_lora_interrupt", tmp_path)
+    _assert_success(first)
+
+    first_result = json.loads(
+        (tmp_path / "hybrid_lora_interrupt_result.json").read_text()
+    )
+    assert first_result["global_step"] == 1
+    assert "DeepSpeedEngine" in first_result["engine"]
+    assert any("lora_" in name for name in first_result["trainable_names"])
+    assert any("lora_" not in name for name in first_result["trainable_names"])
+
+    resumed = _run_worker("hybrid_lora_resume", tmp_path)
+    _assert_success(resumed)
+
+    resume_result = json.loads(
+        (tmp_path / "hybrid_lora_resume_result.json").read_text()
+    )
+    assert resume_result["global_step"] == 2
+    assert "DeepSpeedEngine" in resume_result["engine"]
+    assert any("lora_" in name for name in resume_result["trainable_names"])
+    assert any("lora_" not in name for name in resume_result["trainable_names"])
+
     adapter_dir = Path(resume_result["adapter_dir"])
-    assert (adapter_dir / "adapter_config.json").is_file()
-    assert (adapter_dir / "adapter_model.safetensors").is_file()
+    assert (adapter_dir / "base_trainable_state.safetensors").is_file()
 
-    # This merge runs in the parent pytest process, after both DeepSpeed worker
-    # processes have exited. It is deliberately outside the distributed engine.
-    merged_dir = merge_lora(base_dir, adapter_dir, tmp_path / "merged-model")
-    merged_model = AutoModelForCausalLM.from_pretrained(merged_dir)
-    merged_model.eval()
-    fixed_input = torch.tensor([[1, 4, 5, 2]], dtype=torch.long)
-    with torch.no_grad():
-        merged_logits = merged_model(input_ids=fixed_input).logits.detach().cpu()
-
-    reference_logits = torch.tensor(resume_result["reference_logits"])
-    torch.testing.assert_close(merged_logits, reference_logits, rtol=1e-5, atol=1e-5)
+    _assert_offline_merge_matches_worker(
+        resume_result=resume_result,
+        output_dir=tmp_path,
+        merged_name="hybrid-merged-model",
+    )

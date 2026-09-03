@@ -1,351 +1,370 @@
 # Core training roadmap
 
-This roadmap tracks capabilities that belong in the reusable `llm-training` runtime itself. The goal is a general causal-LM training stack with explicit contracts for model adaptation, optimization, distributed execution, checkpointing, and evaluation.
+This roadmap tracks reusable capabilities in `llm-training`. Application-specific
+data systems, orchestration frameworks, serving engines, retrieval logic, and
+storage transports stay outside this repository.
 
-Application-specific data systems, serving stacks, retrieval logic, domain wrappers, and orchestration frameworks remain outside this repository.
+## Current status
 
-## Current foundation
+```text
+Foundation                                      ✅
+Phase 1  PEFT adaptation foundation             ✅
+Phase 2  LoRA                                   ✅
+Phase 3  TrainableTokens                        ✅ CPU / DeepSpeed CPU
+Phase 4  adapter + offline merge lifecycle      ✅ CPU / DeepSpeed CPU
+Phase 5  PEFT + distributed hardening           🟡 multi-rank ZeRO-3 pending
+Phase 6  Muon / richer optimizers               ❌
+Phase 7  evaluation framework                   ❌
+Phase 8  advanced distributed / observability   ❌
+```
 
-The current runtime already provides a strong base:
-
-- Hugging Face causal-LM loading and export
-- model-structure introspection for transformer layers, embeddings, LM heads, and tied weights
-- selective freezing through `FreezeConfig`
-- configurable causal-LM loss with runtime injection and dotted-path loading
-- causal next-token alignment outside the loss implementation
-- FP32 cross-entropy reduction for BF16 logits
-- finite-loss validation before backward
-- AdamW and Hugging Face schedulers
-- checkpoint/resume with model, optimizer, scheduler, RNG state, and logical trainer position
-- deterministic epoch-seeded sampling for resumable training
-- gradient accumulation and gradient clipping
-- model-native gradient checkpointing
-- optional DeepSpeed ZeRO-1/2/3 backend
-- CPU/NVMe optimizer and parameter offload configuration where supported by ZeRO stage
-- explicit DeepSpeed-owned optimizer and scheduler through `DummyOptim` / `DummyScheduler`
-- Torch-owned optimizer + Torch/Hugging Face scheduler as the default path
-- Torch-owned optimizer + DeepSpeed-owned scheduler support
-- DeepSpeed-owned optimizer + DeepSpeed-owned scheduler support
-- ZeRO-3-aware full-model export through `accelerator.get_state_dict(...)`
-- CPU integration tests, Hugging Face integration tests, resume tests, and an opt-in GPU smoke path
-
-The largest remaining gaps are no longer in the basic training loop. They are concentrated in model adaptation, optimizer specialization, evaluation, and more advanced distributed lifecycle handling.
+“Done” above means the feature's implemented CPU paths have integration tests.
+It does not imply that a multi-rank GPU/ZeRO-3 path has been validated.
 
 ---
 
-## Phase 1: PEFT foundation
+## Foundation — complete
 
-PEFT is the highest-priority next step because it changes which parameters exist, which parameters are trainable, and how training state and exported artifacts must be interpreted.
+The runtime currently provides:
 
-### Scope
+- Hugging Face causal-LM loading and ordinary full-model export
+- transformer-layer, embedding, LM-head, and tied-weight introspection
+- selective base-parameter freezing through `FreezeConfig`
+- configurable causal-LM loss with external next-token shifting
+- FP32 default cross-entropy reduction for lower-precision logits
+- AdamW and Hugging Face schedulers
+- gradient accumulation and clipping
+- deterministic epoch-seeded sampling
+- training-state checkpoint/resume including optimizer, scheduler, RNG, and
+  logical trainer position
+- optional model-native gradient checkpointing
+- Accelerate + optional DeepSpeed ZeRO-1/2/3 configuration
+- explicit Torch-owned vs DeepSpeed-owned optimizer/scheduler contracts
+- CPU, Hugging Face, PEFT, and real DeepSpeed CPU integration tests
 
-- optional `peft` dependency
-- general PEFT configuration owned by `llm-training`
-- a model-adaptation layer that runs after base freeze policy is established and before optimizer construction
-- explicit interaction between `FreezeConfig` and adapter configuration
-- helpers that operate on the existing model-introspection APIs rather than hard-coded model-family branches
-- clear accounting of trainable versus frozen parameters after adaptation
-- early validation of unsupported or contradictory combinations
+ZeRO-3 currently partitions after `accelerator.prepare(...)`; model loading does
+not yet happen inside a ZeRO-3 initialization context.
 
-### Design contract
+---
 
-`FreezeConfig` remains the source of truth for **what should be trainable**. PEFT decides **how selected parameters are trained**.
+## Phase 1 — PEFT adaptation foundation — complete
 
-The intended ordering is:
+PEFT transformations run before optimizer construction so newly created adapter
+parameters belong to the optimizer/backend that owns training.
+
+The central distinction is:
 
 ```text
-load base model
+FreezeConfig
+    -> which base parameters are fully trained
+
+PEFT method config
+    -> which adapter parameterization is applied
+```
+
+For hybrid LoRA, the runtime records the intended full-trained base parameters
+before PEFT freezes the base, then restores those exact parameter objects after
+wrapping.
+
+The current lifecycle is:
+
+```text
+base HF model
     ↓
-apply FreezeConfig
+optional base full-train policy
     ↓
-apply PEFT transformation
+PEFT adaptation
     ↓
-restore any intentionally full-train parameters hidden by PEFT wrapping
+restore explicit hybrid base trainables when applicable
     ↓
-configure gradient checkpointing
+adapter-aware gradient checkpointing
     ↓
-build optimizer
+optimizer / scheduler construction
     ↓
 accelerator.prepare(...)
 ```
 
-### Exit criteria
+---
 
-- PEFT can be enabled without changing the default full-fine-tuning path.
-- Trainable parameter ownership is deterministic and inspectable.
-- Optimizer construction only sees parameters that are intentionally trainable.
-- The feature is covered by unit tests before LoRA-specific behavior is layered on top.
+## Phase 2 — LoRA — complete for current CPU contract
+
+Implemented:
+
+- `LoRAConfig`
+- rank / alpha / dropout / bias configuration
+- conservative transformer-block target discovery
+- fully-qualified target module names
+- optional `target_last_n_layers`
+- adapter-only LoRA (`freeze=None`)
+- hybrid LoRA (`FreezeConfig + LoRA`)
+- adapter-aware gradient checkpointing
+- Torch and real DeepSpeed CPU training/checkpoint/resume
+- pure and hybrid adapter artifact export
+- offline merge into a plain Hugging Face model
+- numerical equivalence tests between trained PEFT and merged model
+
+### Important design difference from the older reference
+
+LoRA placement is intentionally **not** derived from
+`FreezeConfig.train_last_n_layers`. `FreezeConfig` controls full-trained base
+parameters; `LoRAConfig.target_last_n_layers` controls adapter placement. The
+same model can therefore, for example, place LoRA on all blocks while fully
+training only selected base parameters.
+
+Default LoRA discovery is restricted to transformer-block projections. Embedding
+or LM-head adaptation is not implicitly inferred from freeze settings.
 
 ---
 
-## Phase 2: LoRA
+## Phase 3 — TrainableTokens — complete for current CPU contract
 
-LoRA is the first concrete PEFT method to support.
+TrainableTokens is implemented with PEFT's native `TrainableTokensConfig`; the
+runtime does not make the full embedding matrix trainable and does not implement
+manual gradient masking.
 
-### Scope
+Current public configuration:
 
-- general `LoRAConfig`
-- configurable rank, alpha, dropout, bias behavior, and adapter name where useful
-- target-module discovery based on model structure
-- support for limiting LoRA to the subset of transformer layers selected by `FreezeConfig.train_last_n_layers`
-- fully-qualified target-module names when necessary to avoid accidentally adapting every layer with the same leaf module name
-- predictable handling of attention and MLP projection modules
-- correct handling of embeddings and LM heads
-- tied-weight-safe target selection so the same underlying tensor is not wrapped twice
-- support for intentionally full-training selected non-LoRA parameters such as an LM head or embedding table
-- re-application of those full-train decisions after `get_peft_model(...)` if PEFT freezes the base model
-- trainable-parameter summary after wrapping
-
-### Gradient checkpointing requirements
-
-Adapter training changes the gradient path. When the base model is frozen, gradient checkpointing may require input tensors to participate in autograd so gradients reach adapter modules.
-
-The LoRA path must therefore handle:
-
-- `enable_input_require_grads()` where required by the model/PEFT combination
-- `model.config.use_cache = False`
-- model-native `gradient_checkpointing_enable(...)`
-- compatibility with ZeRO-3 checkpoint recomputation behavior
-
-### Exit criteria
-
-- LoRA trains on at least one decoder-only Hugging Face model in CPU integration tests where practical.
-- A real GPU smoke test demonstrates parameter updates only in the expected trainable set.
-- LoRA + gradient checkpointing works.
-- LoRA + ZeRO-3 is tested on the distributed path when multi-GPU integration infrastructure is available.
-- Full-fine-tuning behavior remains unchanged when LoRA is disabled.
-
----
-
-## Phase 3: TrainableTokens / vocabulary-extension training
-
-Supporting newly added vocabulary rows is a separate general capability from LoRA and should be treated explicitly.
-
-### Scope
-
-- optional training of only newly added token rows
-- explicit `n_tokens_added` or equivalent runtime metadata
-- validation that the tokenizer/model vocabulary expansion is consistent
-- support for tied and untied embedding/LM-head configurations
-- target discovery from the unwrapped base model before PEFT wrapping
-- prevention of double-wrapping tied embedding and LM-head tensors
-- correct interaction with `FreezeConfig`
-- adapter-compatible gradient checkpointing
-- clear behavior when the feature is enabled but no tokens were added
-
-### Exit criteria
-
-- only the intended new token rows change after training
-- existing vocabulary rows remain unchanged within numerical tolerance
-- tied embedding/LM-head models are covered by tests
-- checkpoint/resume preserves the trainable-token state
-
----
-
-## Phase 4: adapter-aware checkpoint and export lifecycle
-
-Full-model export and adapter export have different memory and portability requirements, especially under ZeRO-3.
-
-### Scope
-
-- adapter-only checkpoints for LoRA and TrainableTokens
-- avoid full-model ZeRO-3 consolidation when only adapter state is needed
-- gather only trainable adapter parameters when necessary
-- save standard PEFT artifacts where applicable
-- preserve tokenizer and training metadata alongside adapter artifacts
-- optional offline merge into a full Hugging Face checkpoint
-- merged-model export that produces a normal model consumable without PEFT runtime dependencies
-- explicit distinction between:
-  - training-state checkpoints used for resume
-  - adapter artifacts used for deployment or sharing
-  - merged full-model artifacts
-- configurable `max_shard_size` for full-model export
-- release large consolidated state dictionaries as early as practical during export to reduce host-memory pressure
-
-### Exit criteria
-
-- LoRA checkpoint/resume works without forcing a full-model export.
-- Adapter-only export works under the normal backend and ZeRO-3.
-- Optional merge produces numerically equivalent outputs to the unmerged base+adapter model within tolerance.
-
----
-
-## Phase 5: PEFT + DeepSpeed integration hardening
-
-After LoRA and TrainableTokens exist independently, their interaction with distributed ownership must be validated explicitly.
-
-### Scope
-
-- LoRA + ZeRO-1/2/3
-- TrainableTokens + ZeRO-3
-- adapter-only checkpointing under parameter partitioning
-- resume from distributed training-state checkpoints
-- gradient checkpointing under frozen-base adapter training
-- optimizer ownership checks for both Torch-owned and DeepSpeed-owned optimizers
-- no trainable adapter parameter may exist outside the backend's optimization/checkpoint ownership
-
-### Exit criteria
-
-A multi-GPU integration matrix exists for the supported combinations, and unsupported combinations fail before expensive training starts.
-
----
-
-## Phase 6: richer optimizers, starting with Muon
-
-The optimizer layer should support more than AdamW while preserving explicit ownership and parameter-group semantics.
-
-### General optimizer work
-
-- optimizer selection in the Torch-owned path
-- DeepSpeed-native optimizer selection in the DeepSpeed-owned path
-- optimizer-specific configuration without duplicating common hyperparameters across multiple config trees
-- optimizer state checkpoint/resume tests
-- explicit parameter grouping APIs where an optimizer applies different update rules to different parameter classes
-
-### Muon
-
-Muon requires more than accepting `type="Muon"` in configuration. Common Muon implementations apply the Muon update only to selected matrix parameters and use a companion optimizer such as AdamW for embeddings, LM heads, norms, biases, and other parameters.
-
-Planned Muon support includes:
-
-- explicit parameter classification/tagging before optimizer initialization
-- documented rules for which trainable parameters receive Muon updates
-- embeddings and LM heads excluded from Muon unless an implementation explicitly supports them
-- norms, biases, scalar/vector parameters, and other non-matrix parameters handled by the companion optimizer path
-- DeepSpeed Muon integration using the parameter metadata required by the installed DeepSpeed implementation
-- Torch-owned Muon support when a stable implementation is available
-- compatibility with LoRA/PEFT trainable parameter sets
-- tests that verify every trainable parameter belongs to exactly one intended optimizer group
-
-The generic AdamW path must not regain an implicit `ndim`-based weight-decay policy. Any dimension-based rule used by Muon is optimizer-specific, named, documented, and tested.
-
----
-
-## Phase 7: evaluation framework
-
-Evaluation should be a first-class trainer capability rather than application-specific callback code.
-
-### Scope
-
-- optional validation dataset/dataloader
-- evaluation at epoch boundaries
-- optional evaluation every N optimizer steps
-- validation loss
-- perplexity for causal-LM evaluation where meaningful
-- pluggable metric functions
-- distributed-safe metric aggregation through Accelerate primitives such as `gather_for_metrics`
-- no rank-local metric reported under a global metric name
-- evaluation state isolated from training state
-- no optimizer or scheduler mutation during evaluation
-- clean interaction with gradient accumulation and checkpoint cadence
-
-### Future metric layers
-
-Task-specific classification, ranking, generation, or judge metrics should be implemented as pluggable metric components rather than embedded into the core causal-LM trainer.
-
-### Exit criteria
-
-- single-process and multi-process evaluation produce equivalent aggregate metrics
-- evaluation cadence does not change optimizer-step semantics
-- validation can be disabled without affecting the training path
-
----
-
-## Phase 8: backend and observability sophistication
-
-These features matter for larger-scale training, but they are lower priority than PEFT, Muon, and evaluation because the current basic runtime is already functional.
-
-### ZeRO-3 initialization-time partitioning
-
-Current ZeRO-3 support partitions parameters after `accelerator.prepare(...)`. A future model-loading path should allow parameters to be partitioned during `from_pretrained()` so a full model does not need to materialize first on every rank.
-
-Planned work:
-
-- move backend context creation early enough to participate in model construction
-- support ZeRO-3 initialization-time partitioning without breaking the simple non-DeepSpeed load API
-- test large-model loading semantics separately from training-time ZeRO-3 partitioning
-
-### Advanced DeepSpeed configuration
-
-Potential additions, only when justified by real workloads:
-
-- bucket-size tuning
-- stage-3 prefetch and parameter-persistence controls
-- more explicit offload tuning
-- DeepSpeed-owned optimizer with a deferred Torch/Hugging Face scheduler through `DummyScheduler(lr_scheduler_callable=...)`
-- distributed profiler integration
-
-### Profiling and observability
-
-- optional PyTorch profiler integration
-- step-time accounting
-- throughput metrics such as tokens/sec
-- memory reporting
-- optional FLOP estimation where reliable
-- backend-neutral logging hooks rather than hard-coding a tracking vendor
-
-### Tensor parallelism
-
-Tensor parallelism is intentionally later than ZeRO because it changes model execution semantics rather than only data-parallel state ownership.
-
-Before adding TP, the project should have stable:
-
-- PEFT behavior
-- checkpoint/export contracts
-- distributed evaluation
-- optimizer ownership
-- packed-sequence backend validation
-
----
-
-## Data and objective roadmap outside the immediate trainer core
-
-The companion `llm-training-data` package already covers supervised causal-LM rendering, chat formatting, tokenization, label masking, dynamic padding, and packed SFT.
-
-Future cross-repository work can include:
-
-- preference-data preparation with `prompt` / `chosen` / `rejected` contracts
-- DPO-compatible dataset adapters
-- stronger training/inference formatting parity
-- checkpoint-carried prompt/tokenization metadata where it improves reproducibility
-- more explicit packed-sequence backend capability checks
-
-These should remain separated from the trainer runtime so the training package does not become coupled to a specific dataset engine or application schema.
-
----
-
-## Priority order
-
-The current priority order is:
-
-```text
-1. PEFT foundation
-2. LoRA
-3. TrainableTokens
-4. adapter-aware checkpoint / merge lifecycle
-5. PEFT + gradient-checkpointing + ZeRO integration hardening
-6. Muon and richer optimizers
-7. evaluation framework
-8. profiler / advanced DeepSpeed / ZeRO-3 init-time loading / tensor parallelism
+```python
+TrainableTokensConfig(n_tokens_added=N)
 ```
 
-The first five phases are the most important feature-completeness gap in the current runtime.
+The model must already contain the vocabulary expansion. The final N rows of the
+current input-embedding vocabulary are selected as trainable token ids.
+
+Implemented:
+
+- final-N appended-token selection
+- target discovery before PEFT wrapping
+- tied embedding / LM-head handling
+- untied input/output embedding handling
+- PEFT `trainable_tokens_delta` ownership
+- gradient-checkpointing input-grad setup
+- compact adapter serialization
+- explicit `save_embedding_layers=False` so a vocab resize does not cause PEFT
+  to serialize the full embedding matrix
+- offline merge into the exact vocabulary-expanded base
+- old-row bit-identity check after merge
+- new-row update check
+- merged-logit numerical equivalence
+- real DeepSpeed CPU checkpoint/resume/save/offline-merge lifecycle
+
+Standalone TrainableTokens v1 deliberately rejects:
+
+```text
+LoRA + TrainableTokens
+FreezeConfig + TrainableTokens
+```
+
+The older reference had a dangerous LoRA+TrainableTokens path where sequential
+PEFT wrapping could replace the previously created LoRA model. This runtime
+fails early instead. Current PEFT has a native LoRA
+`trainable_token_indices` mechanism; combined LoRA + partial-token training can
+be added later as an explicit, independently tested feature.
+
+The reference also allowed “enabled + zero added tokens” to warn and fall back.
+Here, presence of `TrainableTokensConfig` means the user explicitly requested
+that training regime, so `n_tokens_added <= 0` is a configuration error.
+
+See `docs/trainable_tokens.md` for the detailed contract and reference
+comparison.
+
+---
+
+## Phase 4 — adapter-aware artifact lifecycle — complete for current CPU contract
+
+Training-state checkpoint, adapter artifact, and deployment model are separate
+concepts.
+
+```text
+training-state checkpoint
+    -> resume optimizer/scheduler/RNG/trainer state
+
+PEFT adapter artifact
+    -> small portable training result
+
+merged model
+    -> ordinary Hugging Face checkpoint for deployment
+```
+
+### LoRA
+
+Pure LoRA saves standard PEFT adapter state. Hybrid LoRA additionally writes:
+
+```text
+base_trainable_state.safetensors
+```
+
+with original Hugging Face parameter names for base tensors intentionally
+full-trained through `FreezeConfig`.
+
+Offline merge order for hybrid LoRA is:
+
+```text
+load exact base
+    ↓
+restore base_trainable_state
+    ↓
+attach LoRA adapter
+    ↓
+merge_and_unload()
+    ↓
+plain HF model
+```
+
+### TrainableTokens
+
+TrainableTokens saves only PEFT partial-token state and merges offline into the
+same vocabulary-expanded base used for training.
+
+### Distributed-memory contract
+
+Adapter save paths do not request a consolidated full-model state dict. For
+configured ZeRO-3 they enter `deepspeed.zero.GatheredParameters` only around
+adapter parameters and, for hybrid LoRA, the additional full-trained base
+overrides.
+
+This is the intended multi-rank design, but real multi-rank ZeRO-3 artifact
+saving remains Phase 5 validation work.
+
+Storage-specific concepts such as HDFS/S3 upload paths do not appear in these
+APIs. Publishing remains the responsibility of the artifact-transfer layer.
+
+---
+
+## Phase 5 — PEFT + DeepSpeed hardening — partial
+
+Already validated:
+
+```text
+real DeepSpeed CPU engine                         ✅
+DeepSpeed-owned optimizer + scheduler             ✅
+LoRA checkpoint / fresh-process resume            ✅
+hybrid LoRA checkpoint / fresh-process resume     ✅
+TrainableTokens checkpoint / fresh-process resume ✅
+adapter save after resume                         ✅
+offline merged-model equivalence                  ✅
+```
+
+Still required before claiming distributed ZeRO-3 support:
+
+- 2+ GPU multi-rank ZeRO-3 training
+- actual adapter parameter partitioning behavior
+- NCCL reduce-scatter/all-gather lifecycle
+- adapter-only gather/save from sharded parameters
+- hybrid base-override gather/save
+- TrainableTokens under real ZeRO-3
+- gradient-checkpoint recomputation behavior with partitioned adapter/base
+  tensors
+- distributed checkpoint/resume and offline merge
+
+The older reference forced reentrant gradient checkpointing for its ZeRO-3
+environment because non-reentrant recomputation checks observed partitioned
+parameter shape changes. This runtime keeps `use_reentrant` explicit until that
+behavior is reproduced and validated on the supported multi-rank stack.
+
+A second future item is ZeRO-3 initialization-time partitioning. The current
+lifecycle materializes the complete HF model before the backend is prepared.
+This also means current tied-weight discovery can safely use actual parameter
+identity. If init-time partitioning is added, tied-module discovery should be
+revisited using PEFT/Transformers model metadata rather than assuming tensor
+identity is already materialized.
+
+---
+
+## Phase 6 — Muon and richer optimizers — next major feature
+
+Muon support is not just accepting `type="Muon"`.
+
+The intended policy is approximately:
+
+```text
+eligible hidden 2D trainable matrices -> Muon
+embedding / LM head                    -> companion AdamW
+norm / bias / vectors / scalars        -> companion AdamW
+other ineligible trainables            -> companion AdamW
+```
+
+Requirements:
+
+- explicit parameter classification before optimizer initialization
+- every trainable parameter belongs to exactly one optimizer policy
+- DeepSpeed-native metadata/tagging when using DeepSpeed Muon
+- version requirements documented and validated
+- checkpoint/resume tests
+- PEFT/TrainableTokens behavior defined rather than inferred accidentally from
+  tensor rank
+- Torch-owned Muon only when a stable implementation/API is selected
+
+Generic AdamW must remain independent of Muon-specific tensor-shape rules.
+
+---
+
+## Phase 7 — evaluation framework
+
+Planned:
+
+- optional validation dataset/dataloader
+- epoch and optional step-based evaluation
+- validation loss / perplexity where meaningful
+- pluggable metrics
+- `accelerator.gather_for_metrics` or equivalent distributed aggregation
+- no rank-local metric published under a global metric name
+- evaluation state separated from optimization state
+
+Application-specific classification/ranking/judge metrics remain plugins rather
+than core causal-LM assumptions.
+
+---
+
+## Phase 8 — advanced distributed and observability
+
+Later work includes:
+
+- ZeRO-3 initialization-time partitioning during model construction
+- stage-3 bucket/prefetch/persistence tuning when justified by workloads
+- deferred Torch/HF schedulers with DeepSpeed-owned optimizers if a stable
+  ownership contract is implemented
+- PyTorch profiler integration
+- step time, tokens/sec, memory, and optional FLOP reporting
+- backend-neutral logging hooks
+- tensor parallelism after PEFT/checkpoint/evaluation contracts are stable
+
+---
+
+## Priority from here
+
+```text
+1. real multi-rank PEFT / ZeRO-3 validation when GPU infrastructure is used
+2. Muon and richer optimizer policies
+3. evaluation framework
+4. ZeRO-3 init-time loading / profiling / advanced distributed features
+5. optional combined LoRA + trainable-token adapter support
+```
+
+Multi-GPU validation should be run explicitly on dedicated hardware; normal
+push/PR CI remains CPU-only.
 
 ---
 
 ## Design constraints
 
-The following rules should remain true as the project grows:
+These rules should remain true as the project grows:
 
-- Core APIs remain general and backend-independent where possible.
-- Application-specific orchestration, data systems, serving engines, and domain wrappers stay outside the core runtime.
-- Torch ownership remains the default; backend-specific ownership is explicit.
+- Core APIs stay general and backend-independent where practical.
+- Data engines, orchestration, serving, retrieval, and storage transports stay
+  outside the runtime.
+- Torch ownership is the default; backend ownership is explicit.
 - A hyperparameter has one source of truth.
-- `FreezeConfig` defines what should be trainable; PEFT/optimizer layers must not silently redefine that policy.
-- Trainable parameters must be visible to the backend that owns optimization and checkpointing.
-- Adapter artifacts, training-state checkpoints, and merged deployment models are distinct concepts.
-- Distributed metrics must represent all participating ranks, not a single local shard.
-- Optimizer-specific parameter grouping must be explicit and documented.
-- No hidden generic policy should be inferred from tensor rank, parameter name, or backend unless that rule is part of a named feature contract.
-- Features are not marked supported until their relevant training, checkpoint/resume, and export paths are tested.
-- GPU/distributed tests remain separate from ordinary CPU CI unless the repository gains reliable dedicated hardware runners.
+- `FreezeConfig` means full-training policy for base parameters; PEFT placement
+  has its own configuration.
+- Trainable parameters must exist before optimizer/backend ownership is
+  established.
+- Unsupported adaptation combinations fail early rather than silently changing
+  training semantics.
+- Training checkpoints, adapter artifacts, and merged deployment models are
+  distinct artifacts.
+- Adapter-only save must not gather a full model merely for convenience.
+- Optimizer-specific grouping rules are named, explicit, and tested.
+- Distributed metrics must represent all participating ranks.
+- Features are not marked multi-GPU/ZeRO-3 supported until real multi-rank tests
+  cover training, checkpoint/resume, and export.

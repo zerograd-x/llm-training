@@ -102,13 +102,11 @@ config = TrainingConfig(
 )
 ```
 
-This means:
+This keeps the selected base transformer blocks fully trainable in addition to the LoRA adapters, while explicitly controlling token-embedding and LM-head trainability.
 
-- LoRA adapters are inserted according to `LoRAConfig`.
-- The last two base transformer blocks also remain fully trainable.
-- Embedding and LM-head base parameters remain frozen.
+`FreezeConfig` is a structural policy rather than an implicit global `requires_grad=False` pass. Parameters outside the transformer-block, input-embedding, and LM-head structures it manages keep their prior trainability unless another configured rule changes them. For example, an architecture-specific positional embedding or final normalization parameter may remain trainable. Artifact export records the actual base parameters selected by the resulting policy rather than assuming that only the last N block parameters changed.
 
-`get_peft_model(...)` normally freezes base parameters. The runtime records the base parameters selected by `FreezeConfig` before PEFT wrapping and restores those exact parameter objects afterward. Parameter names may gain PEFT wrapper prefixes, so restoration is based on parameter identity rather than string rewriting.
+`get_peft_model(...)` normally freezes base parameters. The runtime records the base parameters selected by `FreezeConfig` before PEFT wrapping and restores those exact parameter objects afterward. Parameter names may gain PEFT wrapper prefixes or internal names such as `base_layer`, so restoration and artifact identity are connected by parameter identity rather than string rewriting.
 
 If `freeze=None`, no base parameter is restored after PEFT freezes the model.
 
@@ -150,17 +148,22 @@ CPU integration covers:
 - optimizer ownership of the final trainable parameter set
 - base parameters remaining unchanged in adapter-only training
 - explicit base full-training restoration through `FreezeConfig`
+- pure and hybrid LoRA artifact export
+- pure and hybrid offline merge equivalence
 - real DeepSpeed ZeRO-2 initialization with LoRA
 - DeepSpeed-owned optimizer and scheduler
 - checkpoint at step 1
 - fresh-process resume
 - continued training after resume
+- adapter save and offline merge after the DeepSpeed worker exits
 
 These tests do **not** validate multi-rank ZeRO-3 parameter partitioning or NCCL behavior.
 
 ## Deployment artifact lifecycle
 
-Training-state checkpoints, PEFT adapter artifacts, and merged deployment models are separate artifacts.
+Training-state checkpoints, PEFT adapter artifacts, hybrid base overrides, and merged deployment models are separate artifacts.
+
+### Pure LoRA
 
 For pure LoRA (`freeze=None`, `lora.bias="none"`), save the small PEFT artifact from the trainer:
 
@@ -178,9 +181,36 @@ adapter/
     tokenizer files ...        # when available
 ```
 
-`save_adapter()` does not consolidate or serialize the base model. If the configured DeepSpeed stage is ZeRO-3, the implementation enters `deepspeed.zero.GatheredParameters` for only the trainable LoRA parameters before creating the PEFT state dict. This code path is designed to avoid gathering the full base model, but real multi-rank ZeRO-3 adapter serialization remains a Phase-5 validation item.
+No base-model weight is serialized in this case.
 
-Hybrid LoRA is intentionally rejected by `save_adapter()` for now. If any base parameters are also fully trained, adapter-only state is not a complete representation of training and a separate base-override artifact is required.
+### Hybrid LoRA
+
+If `FreezeConfig` leaves base parameters fully trainable, the same `save_adapter()` API produces a hybrid artifact:
+
+```text
+adapter/
+    adapter_config.json
+    adapter_model.safetensors
+    base_trainable_state.safetensors
+    training_config.json
+    tokenizer files ...        # when available
+```
+
+`base_trainable_state.safetensors` contains **only** the fully trained base parameters, not the full base model. Its keys are the original Hugging Face parameter names recorded before PEFT wrapping. This avoids leaking PEFT implementation names such as `base_model.model...` or `.base_layer...` into the deployment artifact contract.
+
+`lora.bias` modes other than `"none"` are still rejected by artifact export because PEFT bias-training serialization semantics have not yet been validated in this runtime.
+
+### ZeRO-aware save boundary
+
+`save_adapter()` does not consolidate the full base model. If the configured DeepSpeed stage is ZeRO-3, the implementation enters `deepspeed.zero.GatheredParameters` for only:
+
+```text
+LoRA parameters
++
+fully trained base overrides, if hybrid
+```
+
+before serialization. This is designed to avoid a whole-model ZeRO-3 gather. Real multi-rank ZeRO-3 adapter serialization remains a Phase-5 validation item; current real DeepSpeed CPU integration is ZeRO-2, world size 1.
 
 ### Offline merge
 
@@ -196,26 +226,40 @@ merged_dir = merge_lora(
 )
 ```
 
-The merge lifecycle is:
+Pure LoRA follows:
 
 ```text
 exact base HF checkpoint
         +
-PEFT adapter artifact
+PEFT adapter
         ↓
 PeftModel.from_pretrained(...)
         ↓
 merge_and_unload()
         ↓
 plain HF model
-        ↓
-save_pretrained(...)
 ```
 
-The exact base matters: the merge must use the same base model shape and vocabulary that the adapter was trained against. This becomes especially important once vocabulary extension / TrainableTokens are supported.
+Hybrid LoRA follows:
+
+```text
+exact base HF checkpoint
+        ↓
+restore base_trainable_state.safetensors
+        ↓
+attach PEFT adapter
+        ↓
+merge_and_unload()
+        ↓
+plain HF model
+```
+
+The order matters. If a LoRA-targeted base weight was also fully trained, the merge must fold the LoRA delta into the **trained base value**, not back into the original base value.
+
+The exact base matters: the merge must use the same base model shape and vocabulary that the adapter was trained against. `merge_lora()` validates hybrid override names and tensor shapes before applying them. This becomes especially important once vocabulary extension / TrainableTokens are supported.
 
 If the adapter artifact contains tokenizer files, `merge_lora()` copies their effective tokenizer configuration into the merged model. Otherwise it uses the base tokenizer when the supplied base location exposes one. Generic `training_config.json` metadata is also carried over. Storage-specific sidecars and upload logic remain outside `llm-training`.
 
-Integration tests compare logits from the trained PEFT model against logits from the offline merged plain HF model, rather than checking only that files were created. The same adapter-save/offline-merge flow is also tested after a real DeepSpeed CPU checkpoint and fresh-process resume.
+Integration tests compare logits from the trained PEFT model against logits from the offline merged plain HF model, rather than checking only that files were created. Both pure and hybrid paths are also exercised after a real DeepSpeed CPU checkpoint and fresh-process resume.
 
 `Trainer.export_model()` remains reserved for ordinary full fine-tuning. With LoRA enabled it directs callers to `save_adapter()` followed by offline `merge_lora(...)` instead of guessing which artifact type the caller intended.

@@ -6,12 +6,34 @@ from typing import Any, Literal
 
 @dataclass(frozen=True)
 class FreezeConfig:
-    """Controls which base-model parameters remain trainable."""
+    """Controls which base-model parameters remain fully trainable."""
 
     train_last_n_layers: int | None = None
     train_embeddings: bool = True
     train_lm_head: bool = True
     trainable_prefixes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LoRAConfig:
+    """Configures LoRA adapter placement and low-rank parameterization.
+
+    ``target_modules`` contains exact module names or suffixes. When omitted,
+    the runtime uses a conservative allow-list of common transformer
+    projection names and resolves them to fully-qualified module names inside
+    transformer blocks. ``target_last_n_layers`` limits adapter placement and
+    is intentionally separate from ``FreezeConfig.train_last_n_layers``:
+    FreezeConfig controls full-training of base parameters, while this field
+    controls where adapter parameters are inserted.
+    """
+
+    rank: int = 8
+    alpha: int = 16
+    dropout: float = 0.0
+    bias: Literal["none", "all", "lora_only"] = "none"
+    target_modules: tuple[str, ...] | None = None
+    target_last_n_layers: int | None = None
+    adapter_name: str = "default"
 
 
 @dataclass(frozen=True)
@@ -102,6 +124,8 @@ class TrainingConfig:
     max_grad_norm: float | None = 1.0
     seed: int = 42
     log_every_steps: int = 10
+    freeze: FreezeConfig | None = None
+    lora: LoRAConfig | None = None
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     loss: LossConfig = field(default_factory=LossConfig)
@@ -127,6 +151,38 @@ class TrainingConfig:
             raise ValueError("mixed_precision must be one of: no, fp16, bf16")
         if self.max_grad_norm is not None and self.max_grad_norm <= 0:
             raise ValueError("max_grad_norm must be > 0 when set")
+
+        if self.freeze is not None:
+            if (
+                self.freeze.train_last_n_layers is not None
+                and self.freeze.train_last_n_layers < 0
+            ):
+                raise ValueError("freeze.train_last_n_layers must be >= 0 or None")
+            if any(not prefix.strip() for prefix in self.freeze.trainable_prefixes):
+                raise ValueError("freeze.trainable_prefixes must not contain empty prefixes")
+
+        if self.lora is not None:
+            lora = self.lora
+            if lora.rank <= 0:
+                raise ValueError("lora.rank must be > 0")
+            if lora.alpha <= 0:
+                raise ValueError("lora.alpha must be > 0")
+            if not 0 <= lora.dropout < 1:
+                raise ValueError("lora.dropout must be in [0, 1)")
+            if lora.bias not in {"none", "all", "lora_only"}:
+                raise ValueError("lora.bias must be one of: none, all, lora_only")
+            if not lora.adapter_name.strip():
+                raise ValueError("lora.adapter_name must be non-empty")
+            if lora.target_last_n_layers is not None and lora.target_last_n_layers <= 0:
+                raise ValueError("lora.target_last_n_layers must be > 0 when set")
+            if lora.target_modules is not None:
+                if not lora.target_modules:
+                    raise ValueError("lora.target_modules must not be empty when set")
+                if any(not target.strip() for target in lora.target_modules):
+                    raise ValueError("lora.target_modules must not contain empty names")
+                if len(set(lora.target_modules)) != len(lora.target_modules):
+                    raise ValueError("lora.target_modules must not contain duplicates")
+
         if self.optimizer.learning_rate <= 0:
             raise ValueError("optimizer.learning_rate must be > 0")
         if self.optimizer.weight_decay < 0:

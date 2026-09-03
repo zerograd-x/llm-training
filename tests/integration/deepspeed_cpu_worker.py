@@ -13,6 +13,7 @@ from llm_training import (
     DeepSpeedConfig,
     DeepSpeedOptimizerConfig,
     DeepSpeedSchedulerConfig,
+    FreezeConfig,
     GradientCheckpointingConfig,
     LoRAConfig,
     OptimizerConfig,
@@ -70,8 +71,8 @@ def lora_base_dir(output_dir: Path) -> Path:
     return output_dir / "lora-base-model"
 
 
-def build_training_model(output_dir: Path, *, lora: bool) -> GPT2LMHeadModel:
-    if not lora:
+def build_training_model(output_dir: Path, *, adapter_training: bool) -> GPT2LMHeadModel:
+    if not adapter_training:
         return build_model()
 
     base_dir = lora_base_dir(output_dir)
@@ -86,14 +87,27 @@ def build_config(
     *,
     resume_from: str | None = None,
     lora: bool = False,
+    hybrid: bool = False,
 ) -> TrainingConfig:
+    if lora and hybrid:
+        raise ValueError("lora and hybrid modes are mutually exclusive")
+    adapter_training = lora or hybrid
+    freeze = None
+    if hybrid:
+        freeze = FreezeConfig(
+            train_last_n_layers=1,
+            train_embeddings=False,
+            train_lm_head=False,
+        )
+
     return TrainingConfig(
         output_dir=str(output_dir),
         num_epochs=1,
         per_device_batch_size=2,
         seed=123,
         log_every_steps=1,
-        lora=LoRAConfig(rank=4, alpha=8, dropout=0.0) if lora else None,
+        freeze=freeze,
+        lora=LoRAConfig(rank=4, alpha=8, dropout=0.0) if adapter_training else None,
         optimizer=OptimizerConfig(
             learning_rate=1e-3,
             weight_decay=0.0,
@@ -103,8 +117,8 @@ def build_config(
         ),
         scheduler=SchedulerConfig(name="linear", warmup_steps=1),
         gradient_checkpointing=GradientCheckpointingConfig(
-            enabled=lora,
-            use_reentrant=False if lora else None,
+            enabled=adapter_training,
+            use_reentrant=False if adapter_training else None,
         ),
         deepspeed=DeepSpeedConfig(
             zero_stage=2,
@@ -141,21 +155,43 @@ def _trainable_names(trainer: Trainer) -> list[str]:
     ]
 
 
-def run_interrupt(output_dir: Path, *, lora: bool = False) -> None:
+def _mode_name(*, lora: bool, hybrid: bool) -> str:
+    if hybrid:
+        return "hybrid_lora"
+    if lora:
+        return "lora"
+    return "full"
+
+
+def _assert_adapter_trainables(trainable_names: list[str], *, hybrid: bool) -> None:
+    assert trainable_names
+    assert any("lora_" in name for name in trainable_names)
+    if hybrid:
+        assert any("lora_" not in name for name in trainable_names)
+    else:
+        assert all("lora_" in name for name in trainable_names)
+
+
+def run_interrupt(
+    output_dir: Path,
+    *,
+    lora: bool = False,
+    hybrid: bool = False,
+) -> None:
+    adapter_training = lora or hybrid
     trainer = InterruptAfterFirstCheckpointTrainer(
-        model=build_training_model(output_dir, lora=lora),
+        model=build_training_model(output_dir, adapter_training=adapter_training),
         train_dataset=TensorRows(),
         collate_fn=stack_collator,
-        config=build_config(output_dir, lora=lora),
+        config=build_config(output_dir, lora=lora, hybrid=hybrid),
     )
 
     engine_name = type(trainer.model).__name__
     optimizer_name = type(trainer.optimizer).__name__
     scheduler_name = type(trainer.scheduler).__name__
     trainable_names = _trainable_names(trainer)
-    if lora:
-        assert trainable_names
-        assert all("lora_" in name for name in trainable_names)
+    if adapter_training:
+        _assert_adapter_trainables(trainable_names, hybrid=hybrid)
 
     try:
         trainer.train()
@@ -170,7 +206,8 @@ def run_interrupt(output_dir: Path, *, lora: bool = False) -> None:
     checkpoint = output_dir / "checkpoint-00000001"
     assert (checkpoint / "trainer_state.json").is_file()
 
-    result_name = "lora_interrupt_result.json" if lora else "interrupt_result.json"
+    mode = _mode_name(lora=lora, hybrid=hybrid)
+    result_name = "interrupt_result.json" if mode == "full" else f"{mode}_interrupt_result.json"
     (output_dir / result_name).write_text(
         json.dumps(
             {
@@ -186,21 +223,31 @@ def run_interrupt(output_dir: Path, *, lora: bool = False) -> None:
     )
 
 
-def run_resume(output_dir: Path, *, lora: bool = False) -> None:
+def run_resume(
+    output_dir: Path,
+    *,
+    lora: bool = False,
+    hybrid: bool = False,
+) -> None:
+    adapter_training = lora or hybrid
     trainer = Trainer(
-        model=build_training_model(output_dir, lora=lora),
+        model=build_training_model(output_dir, adapter_training=adapter_training),
         train_dataset=TensorRows(),
         collate_fn=stack_collator,
-        config=build_config(output_dir, resume_from="latest", lora=lora),
+        config=build_config(
+            output_dir,
+            resume_from="latest",
+            lora=lora,
+            hybrid=hybrid,
+        ),
     )
 
     assert trainer.state.global_step == 1
     assert trainer.state.epoch == 0
     assert trainer.state.batch_in_epoch == 1
     trainable_names = _trainable_names(trainer)
-    if lora:
-        assert trainable_names
-        assert all("lora_" in name for name in trainable_names)
+    if adapter_training:
+        _assert_adapter_trainables(trainable_names, hybrid=hybrid)
 
     state = trainer.train()
     assert state.global_step == 2
@@ -210,7 +257,7 @@ def run_resume(output_dir: Path, *, lora: bool = False) -> None:
 
     reference_logits = None
     adapter_dir = None
-    if lora:
+    if adapter_training:
         model = trainer.accelerator.unwrap_model(trainer.model)
         fixed_input = torch.tensor([[1, 4, 5, 2]], dtype=torch.long)
         model.eval()
@@ -219,6 +266,11 @@ def run_resume(output_dir: Path, *, lora: bool = False) -> None:
         adapter_dir = trainer.save_adapter()
         assert (adapter_dir / "adapter_config.json").is_file()
         assert (adapter_dir / "adapter_model.safetensors").is_file()
+        base_state_path = adapter_dir / "base_trainable_state.safetensors"
+        if hybrid:
+            assert base_state_path.is_file()
+        else:
+            assert not base_state_path.exists()
     else:
         trainer.export_model()
         final_model = output_dir / "final-model"
@@ -228,7 +280,8 @@ def run_resume(output_dir: Path, *, lora: bool = False) -> None:
             for filename in ("model.safetensors", "pytorch_model.bin")
         )
 
-    result_name = "lora_resume_result.json" if lora else "resume_result.json"
+    mode = _mode_name(lora=lora, hybrid=hybrid)
+    result_name = "resume_result.json" if mode == "full" else f"{mode}_resume_result.json"
     (output_dir / result_name).write_text(
         json.dumps(
             {
@@ -237,7 +290,7 @@ def run_resume(output_dir: Path, *, lora: bool = False) -> None:
                 "optimizer": type(trainer.optimizer).__name__,
                 "scheduler": type(trainer.scheduler).__name__,
                 "trainable_names": trainable_names,
-                "base_dir": str(lora_base_dir(output_dir)) if lora else None,
+                "base_dir": str(lora_base_dir(output_dir)) if adapter_training else None,
                 "adapter_dir": str(adapter_dir) if adapter_dir is not None else None,
                 "reference_logits": reference_logits,
             },
@@ -251,7 +304,8 @@ def main() -> None:
     if len(sys.argv) != 3:
         raise SystemExit(
             "usage: deepspeed_cpu_worker.py "
-            "<interrupt|resume|lora_interrupt|lora_resume> <output-dir>"
+            "<interrupt|resume|lora_interrupt|lora_resume|"
+            "hybrid_lora_interrupt|hybrid_lora_resume> <output-dir>"
         )
     mode = sys.argv[1]
     output_dir = Path(sys.argv[2])
@@ -265,6 +319,10 @@ def main() -> None:
         run_interrupt(output_dir, lora=True)
     elif mode == "lora_resume":
         run_resume(output_dir, lora=True)
+    elif mode == "hybrid_lora_interrupt":
+        run_interrupt(output_dir, hybrid=True)
+    elif mode == "hybrid_lora_resume":
+        run_resume(output_dir, hybrid=True)
     else:
         raise SystemExit(f"unknown mode: {mode}")
 

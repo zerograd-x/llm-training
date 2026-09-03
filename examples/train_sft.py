@@ -2,10 +2,10 @@ from torch.utils.data import Dataset
 
 from llm_training import (
     CheckpointConfig,
+    DistributedRuntime,
     Trainer,
     TrainingConfig,
     adapt_column_batch_collator,
-    load_causal_lm,
 )
 from llm_training_data import build_sft_collator
 
@@ -21,7 +21,14 @@ class PromptDataset(Dataset):
         return self.rows[index]
 
 
-components = load_causal_lm("HuggingFaceTB/SmolLM2-135M-Instruct")
+config = TrainingConfig(
+    output_dir="./outputs/sft-demo",
+    num_epochs=1,
+    per_device_batch_size=2,
+    checkpoint=CheckpointConfig(save_every_steps=10, keep_last=2),
+)
+runtime = DistributedRuntime(config)
+components = runtime.load_causal_lm("HuggingFaceTB/SmolLM2-135M-Instruct")
 
 rows = [
     {"prompt": "What is 2 + 2?", "completion": "4"},
@@ -38,12 +45,8 @@ trainer = Trainer(
     tokenizer=components.tokenizer,
     train_dataset=PromptDataset(rows),
     collate_fn=adapt_column_batch_collator(data_collator),
-    config=TrainingConfig(
-        output_dir="./outputs/sft-demo",
-        num_epochs=1,
-        per_device_batch_size=2,
-        checkpoint=CheckpointConfig(save_every_steps=10, keep_last=2),
-    ),
+    config=config,
+    runtime=runtime,
 )
 
 trainer.train()

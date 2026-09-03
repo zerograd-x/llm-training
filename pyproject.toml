@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 peft = [
   "peft>=0.13,<1",
+  "safetensors>=0.4,<1",
 ]
 deepspeed = [
   "deepspeed>=0.14.5,<1",

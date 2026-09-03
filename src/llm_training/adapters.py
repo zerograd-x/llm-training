@@ -125,12 +125,6 @@ def adapt_model_for_training(
             id(parameter) for parameter in model.parameters() if parameter.requires_grad
         }
 
-    full_train_base_parameters = sum(
-        parameter.numel()
-        for parameter in model.parameters()
-        if id(parameter) in intended_full_train_ids
-    )
-
     if lora is None:
         summary = summarize_trainable_parameters(model)
         return model, ModelAdaptationSummary(
@@ -138,8 +132,14 @@ def adapt_model_for_training(
             target_modules=(),
             trainable_parameters=summary.trainable_parameters,
             total_parameters=summary.total_parameters,
-            full_train_base_parameters=full_train_base_parameters,
+            full_train_base_parameters=summary.trainable_parameters,
         )
+
+    full_train_base_parameters = sum(
+        parameter.numel()
+        for parameter in model.parameters()
+        if id(parameter) in intended_full_train_ids
+    )
 
     if importlib.util.find_spec("peft") is None:
         raise ImportError(

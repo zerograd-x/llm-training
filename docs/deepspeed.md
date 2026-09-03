@@ -95,6 +95,8 @@ DeepSpeed scheduler config
 
 Common hyperparameters keep one source of truth. Learning rate, weight decay, Adam betas, and epsilon come from `OptimizerConfig`; warmup length and total training steps come from `SchedulerConfig` plus the trainer's computed training length. DeepSpeed-specific `params` may add backend-specific options but may not override those shared fields.
 
+For data-parallel runs the trainer computes scheduler length from the expected per-rank prepared DataLoader length rather than from the unsharded pre-prepare DataLoader length. With the current Accelerate default `split_batches=False`, the number of batches per rank is `ceil(unsharded_batches / world_size)`.
+
 DeepSpeed `WarmupLR` and `WarmupDecayLR` require at least one warmup step. The runtime rejects a resolved warmup of zero before entering DeepSpeed rather than silently changing the requested schedule.
 
 The supported ownership combinations are:
@@ -145,28 +147,58 @@ When enabled, the runtime disables `model.config.use_cache` when that field exis
 
 `use_reentrant=None` leaves the choice to the model implementation. Setting it explicitly requires a model implementation that accepts `gradient_checkpointing_kwargs`.
 
-## ZeRO-3 model loading limitation
+## Distributed lifecycle before model loading
 
-ZeRO-3 parameter partitioning is active after `accelerator.prepare(...)`, so training-time model parameters are sharded across data-parallel ranks.
+For distributed jobs, construct `DistributedRuntime` before loading the model:
 
-The current public API still loads a model before constructing `Trainer`:
+```python
+from llm_training import DistributedRuntime
 
-```text
-load_causal_lm()
-    -> from_pretrained() creates the model
-    -> Trainer(...)
-    -> Accelerator + DeepSpeedPlugin
-    -> accelerator.prepare(...)
-    -> ZeRO-3 parameter partitioning
+runtime = DistributedRuntime(config)
+components = runtime.load_causal_lm(model_name_or_path)
+
+trainer = Trainer(
+    ...,
+    config=config,
+    runtime=runtime,
+)
 ```
 
-Therefore the runtime does **not yet claim ZeRO-3 initialization-time partitioning** (`zero3_init_flag=True`). A large model may still need enough memory to be materialized during `from_pretrained()` before ZeRO-3 takes ownership.
+The runtime owns one Accelerator/process-group instance for the whole worker lifecycle. Local rank 0 is allowed to populate the node-local Hugging Face cache before sibling ranks enter `from_pretrained(...)`; all ranks still construct their own model object. `Trainer` reuses the same Accelerator rather than creating a second distributed runtime.
 
-Supporting initialization-time partitioning requires moving backend context into model construction rather than merely changing a flag after the model has already been loaded.
+For generic S3/HDFS/shared-filesystem materialization, use `runtime.materialize_path(...)` with `scope="local"` for node-local disks or `scope="global"` for a filesystem visible to every node. See [`distributed-runtime.md`](distributed-runtime.md).
+
+## ZeRO-3 model loading limitation
+
+The earlier lifecycle problem—rank identity not existing until after model loading—has been removed by `DistributedRuntime`: the backend/process group can now exist before `from_pretrained()`.
+
+However, **ZeRO-3 initialization-time parameter partitioning is still not enabled**. `build_accelerator(...)` currently constructs the `DeepSpeedPlugin` with `zero3_init_flag=False`, so the lifecycle is:
+
+```text
+DistributedRuntime
+    -> Accelerator + DeepSpeedPlugin
+    -> local-main-first model/cache resolution
+    -> every rank from_pretrained() materializes its model object
+    -> Trainer(..., runtime=runtime)
+    -> accelerator.prepare(...)
+    -> ZeRO-3 partitions parameters
+```
+
+Therefore a large model may still need enough host/device memory to be materialized before ZeRO-3 takes ownership. Moving the backend earlier was a prerequisite for future init-time partitioning, but it does not by itself make `from_pretrained()` ZeRO-3-sharded.
+
+Supporting true initialization-time partitioning requires a separate loading path that enters the appropriate DeepSpeed/Transformers initialization context during model construction and is validated on real multi-GPU hardware.
+
+## Checkpoint and artifact ownership
+
+Training-state checkpointing is a collective/backend operation. Under ZeRO, every participating rank may own distinct model/optimizer state, so `accelerator.save_state(...)` is intentionally called by all ranks. Small logical metadata (`trainer_state.json`, training config, tokenizer metadata) is written by global rank 0 after the collective save.
+
+Adapter export follows the same ownership split: required adapter parameters participate in any necessary gather, but only global rank 0 serializes the final adapter files.
+
+LoRA and TrainableTokens merge are **driver-only** operations. `merge_lora()` and `merge_trainable_tokens()` reject an active/environment-declared world size greater than one. The intended lifecycle is distributed training -> rank-0 adapter serialization -> worker exit -> single-process offline merge.
 
 ## Export
 
-Distributed export obtains the state dict through `accelerator.get_state_dict(model)` before calling Hugging Face `save_pretrained(...)`. This is important for sharded backends such as ZeRO-3, where the in-memory model parameters are not necessarily present as one complete copy on each rank.
+Distributed full-model export obtains the state dict through `accelerator.get_state_dict(model)` before calling Hugging Face `save_pretrained(...)`. This is important for sharded backends such as ZeRO-3, where the in-memory model parameters are not necessarily present as one complete copy on each rank.
 
 ## Validation levels
 
@@ -175,6 +207,10 @@ DeepSpeed support is validated at multiple levels rather than treating all tests
 ### CPU unit tests
 
 Normal CI validates configuration translation, ownership rules, `DummyOptim` / `DummyScheduler` construction, offload validation, gradient-checkpointing configuration, and ZeRO-aware export contracts without starting a DeepSpeed engine.
+
+### Two-process generic distributed integration
+
+A CPU integration test launches two real processes with `torch.distributed.run` and validates rank/global-local ownership, local-rank-0 materialization, all-rank model construction, DataLoader sharding, reuse of one `DistributedRuntime` inside `Trainer`, per-rank scheduler length, and the driver-only guard. This validates generic distributed lifecycle semantics without claiming ZeRO-3 parameter sharding.
 
 ### Real DeepSpeed CPU integration
 
@@ -188,7 +224,8 @@ A separate CPU CI job installs the real DeepSpeed package and starts an actual D
 - a step-1 DeepSpeed checkpoint followed by an intentional process interruption;
 - resume from that checkpoint in a fresh Python process;
 - completion of the next optimizer step;
-- Hugging Face model export after resume.
+- LoRA/TrainableTokens adapter lifecycle tests where configured;
+- Hugging Face model export after resume for the full-fine-tune path.
 
 This test currently exercises ZeRO stage 2 with world size 1. It verifies real DeepSpeed/Accelerate API integration and checkpoint lifecycle on CPU, but it does **not** prove cross-rank parameter partitioning.
 
@@ -204,6 +241,7 @@ The following remain separate validation levels:
     -> real cross-rank parameter partitioning
     -> all-gather / reduce-scatter communication
     -> distributed checkpoint/resume
+    -> adapter gather/save under partitioning
     -> consolidated Hugging Face export
 ```
 

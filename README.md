@@ -17,6 +17,9 @@ The first version focuses on one golden path:
 - Hugging Face decoder-only causal LMs
 - PyTorch + Hugging Face Accelerate
 - full fine-tuning or selective layer freezing
+- optional PEFT LoRA, including explicit hybrid LoRA + fully-trained base parameters
+- optional PEFT TrainableTokens for newly appended vocabulary rows
+- adapter-only training artifacts with offline merge back into plain Hugging Face checkpoints
 - configurable causal-LM loss with a default masked cross-entropy implementation
 - AdamW + Hugging Face schedulers
 - optional model-native gradient checkpointing
@@ -28,12 +31,18 @@ The first version focuses on one golden path:
 
 Serving, data-processing systems, domain-specific model wrappers, and other application-specific extensions stay outside the core runtime.
 
-Planned core capabilities after the current backend foundation include PEFT/LoRA and richer optimizer support such as Muon. These are considered part of the training runtime roadmap rather than application-specific extensions. See [`docs/roadmap.md`](docs/roadmap.md).
+Muon and additional optimizer policies remain on the core training roadmap. See [`docs/roadmap.md`](docs/roadmap.md), [`docs/peft.md`](docs/peft.md), and [`docs/trainable_tokens.md`](docs/trainable_tokens.md).
 
 ## Install
 
 ```bash
 pip install -e .
+```
+
+Install PEFT support for LoRA and TrainableTokens with:
+
+```bash
+pip install -e ".[peft]"
 ```
 
 Install the optional DeepSpeed backend with:
@@ -59,10 +68,10 @@ llm-training-data
     |
     v
 llm-training
-(model/freeze/loss/optimizer/scheduler/train/checkpoint)
+(model/freeze/PEFT/loss/optimizer/scheduler/train/checkpoint)
     |
     v
-trained checkpoint
+training state / adapter / merged model
     |
     v
 model-artifact-transfer   # optional publishing layer
@@ -197,7 +206,7 @@ config = TrainingConfig(
 
 This path uses Accelerate `DummyOptim` and `DummyScheduler` placeholders until `accelerator.prepare(...)`, where DeepSpeed creates the real implementations. A Torch optimizer with a DeepSpeed-owned scheduler is also supported. A DeepSpeed-owned optimizer with a Torch/Hugging Face scheduler is intentionally deferred because it requires constructing that scheduler only after the real DeepSpeed optimizer exists.
 
-ZeRO-3 partitions parameters after `accelerator.prepare(...)`. The current API does not yet partition parameters during `from_pretrained()` itself, because model loading still happens before the training backend is constructed. Distributed model export uses `accelerator.get_state_dict(model)` so sharded parameters can be consolidated correctly.
+ZeRO-3 partitions parameters after `accelerator.prepare(...)`. The current API does not yet partition parameters during `from_pretrained()` itself, because model loading still happens before the training backend is constructed. Real multi-rank ZeRO-3 PEFT artifact saving remains a separate validation item; adapter save code is designed to gather only required adapter/hybrid tensors rather than a full model.
 
 See [`docs/deepspeed.md`](docs/deepspeed.md) for ownership combinations, ZeRO stages, offload settings, initialization-time limitations, and export behavior.
 
@@ -229,7 +238,7 @@ Run real Hugging Face CPU integration tests with:
 pytest -m "integration and not gpu" tests/integration
 ```
 
-The checkpoint-resume integration test deliberately interrupts training after the first optimizer step, creates a fresh model and `Trainer`, resumes from `latest`, restores the saved model state and trainer position, skips the already-completed batch, and finishes the second optimizer step.
+The checkpoint-resume integration tests deliberately interrupt training after the first optimizer step, create a fresh model and `Trainer`, resume from `latest`, restore the saved model state and trainer position, skip the already-completed batch, and finish the second optimizer step. PEFT integration additionally verifies adapter serialization and offline merged-model numerical equivalence.
 
 The `llm-training-data` bridge test uses the real `build_sft_collator` from the sibling repository. It is skipped when `llm_training_data` is not installed. To run that cross-repository test locally:
 

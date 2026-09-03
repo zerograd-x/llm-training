@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 from transformers import PreTrainedTokenizerBase
 
 from .adapters import ModelAdaptationSummary, adapt_model_for_training
+from .artifacts import save_lora_adapter
 from .backend import build_accelerator, configure_gradient_checkpointing
 from .checkpoint import (
     TrainerState,
@@ -241,11 +242,27 @@ class Trainer:
             tokenizer=self.tokenizer,
         )
 
+    def save_adapter(self, output_dir: str | Path | None = None) -> Path:
+        """Save a pure-LoRA PEFT artifact without consolidating the base model."""
+
+        if self.config.lora is None:
+            raise ValueError("save_adapter() requires config.lora")
+        destination = Path(output_dir or self.config.output_dir) / "adapter"
+        return save_lora_adapter(
+            self.model,
+            accelerator=self.accelerator,
+            output_dir=destination,
+            config=self.config,
+            adaptation_summary=self.adaptation_summary,
+            tokenizer=self.tokenizer,
+        )
+
     def export_model(self, output_dir: str | Path | None = None) -> None:
         if self.config.lora is not None:
             raise NotImplementedError(
-                "LoRA export is intentionally separate from full-model export. "
-                "Adapter-only and merged export will be added in the adapter-artifact phase."
+                "LoRA uses a separate artifact lifecycle: call save_adapter() "
+                "during/after training, then merge_lora(base, adapter, output) "
+                "offline to produce a plain Hugging Face checkpoint."
             )
 
         destination = Path(output_dir or self.config.output_dir) / "final-model"

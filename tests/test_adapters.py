@@ -6,9 +6,12 @@ from torch import nn
 from llm_training import (
     FreezeConfig,
     LoRAConfig,
+    TrainableTokensConfig,
     TrainingConfig,
     adapt_model_for_training,
     discover_lora_target_modules,
+    discover_trainable_token_target_modules,
+    resolve_trainable_token_ids,
 )
 
 
@@ -45,10 +48,12 @@ class Backbone(nn.Module):
 
 
 class TinyModel(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, *, tied: bool = False) -> None:
         super().__init__()
         self.model = Backbone()
         self.lm_head = nn.Linear(8, 32, bias=False)
+        if tied:
+            self.lm_head.weight = self.model.embed_tokens.weight
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -104,6 +109,32 @@ def test_lora_discovery_fails_when_no_target_matches() -> None:
         )
 
 
+def test_trainable_tokens_targets_embedding_and_untied_lm_head() -> None:
+    targets = discover_trainable_token_target_modules(TinyModel(tied=False))
+    assert targets == ("model.embed_tokens", "lm_head")
+
+
+def test_trainable_tokens_omits_explicit_lm_head_when_weights_are_tied() -> None:
+    targets = discover_trainable_token_target_modules(TinyModel(tied=True))
+    assert targets == ("model.embed_tokens",)
+
+
+def test_trainable_tokens_selects_only_appended_vocab_rows() -> None:
+    token_ids = resolve_trainable_token_ids(
+        TinyModel(),
+        TrainableTokensConfig(n_tokens_added=3),
+    )
+    assert token_ids == (29, 30, 31)
+
+
+def test_trainable_tokens_rejects_more_rows_than_vocab() -> None:
+    with pytest.raises(ValueError, match="exceeds"):
+        resolve_trainable_token_ids(
+            TinyModel(),
+            TrainableTokensConfig(n_tokens_added=33),
+        )
+
+
 def test_freeze_without_lora_is_applied_inside_model_adaptation() -> None:
     model = TinyModel()
     adapted, summary = adapt_model_for_training(
@@ -139,3 +170,40 @@ def test_freeze_without_lora_is_applied_inside_model_adaptation() -> None:
 def test_lora_config_validation(tmp_path, lora: LoRAConfig, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         TrainingConfig(output_dir=str(tmp_path), lora=lora).validate()
+
+
+@pytest.mark.parametrize(
+    ("trainable_tokens", "message"),
+    [
+        (TrainableTokensConfig(n_tokens_added=0), "n_tokens_added"),
+        (TrainableTokensConfig(n_tokens_added=1, adapter_name=""), "adapter_name"),
+    ],
+)
+def test_trainable_tokens_config_validation(
+    tmp_path,
+    trainable_tokens: TrainableTokensConfig,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        TrainingConfig(
+            output_dir=str(tmp_path),
+            trainable_tokens=trainable_tokens,
+        ).validate()
+
+
+def test_trainable_tokens_rejects_lora_combination(tmp_path) -> None:
+    with pytest.raises(ValueError, match="cannot be enabled together"):
+        TrainingConfig(
+            output_dir=str(tmp_path),
+            lora=LoRAConfig(),
+            trainable_tokens=TrainableTokensConfig(n_tokens_added=2),
+        ).validate()
+
+
+def test_trainable_tokens_rejects_freeze_combination(tmp_path) -> None:
+    with pytest.raises(ValueError, match="cannot be combined"):
+        TrainingConfig(
+            output_dir=str(tmp_path),
+            freeze=FreezeConfig(),
+            trainable_tokens=TrainableTokensConfig(n_tokens_added=2),
+        ).validate()

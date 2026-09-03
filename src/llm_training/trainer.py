@@ -13,6 +13,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, Dataset, Sampler
 from transformers import PreTrainedTokenizerBase
 
+from .adapters import ModelAdaptationSummary, adapt_model_for_training
 from .backend import build_accelerator, configure_gradient_checkpointing
 from .checkpoint import (
     TrainerState,
@@ -84,6 +85,11 @@ class Trainer:
                 "Trainer scheduler injection cannot be combined with a "
                 "DeepSpeed-owned scheduler"
             )
+        if optimizer is not None and config.lora is not None:
+            raise ValueError(
+                "Trainer optimizer injection cannot be combined with config.lora: "
+                "LoRA parameters are created inside Trainer before optimizer construction"
+            )
 
         self.config = config
         self.tokenizer = tokenizer
@@ -94,7 +100,16 @@ class Trainer:
         )
         self.loss_fn.to(self.accelerator.device)
 
-        configure_gradient_checkpointing(model, config.gradient_checkpointing)
+        model, self.adaptation_summary = adapt_model_for_training(
+            model,
+            freeze=config.freeze,
+            lora=config.lora,
+        )
+        configure_gradient_checkpointing(
+            model,
+            config.gradient_checkpointing,
+            require_input_grads=config.lora is not None,
+        )
 
         self._sampler = EpochSeededRandomSampler(train_dataset, seed=config.seed)
         dataloader = DataLoader(
@@ -227,6 +242,12 @@ class Trainer:
         )
 
     def export_model(self, output_dir: str | Path | None = None) -> None:
+        if self.config.lora is not None:
+            raise NotImplementedError(
+                "LoRA export is intentionally separate from full-model export. "
+                "Adapter-only and merged export will be added in the adapter-artifact phase."
+            )
+
         destination = Path(output_dir or self.config.output_dir) / "final-model"
         save_causal_lm(
             self.model,

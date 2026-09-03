@@ -14,6 +14,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenize
 
 from .adapters import ModelAdaptationSummary
 from .config import TrainingConfig
+from .distributed import require_single_process
 
 
 _BASE_TRAINABLE_STATE_FILENAME = "base_trainable_state.safetensors"
@@ -432,6 +433,7 @@ def merge_lora(
 ) -> Path:
     """Offline-merge a LoRA artifact into its exact base model."""
 
+    require_single_process("merge_lora")
     _require_peft()
     from peft import PeftModel
 
@@ -478,6 +480,7 @@ def merge_trainable_tokens(
     an ordinary Hugging Face causal-LM checkpoint.
     """
 
+    require_single_process("merge_trainable_tokens")
     _require_peft()
     from peft import PeftConfig, PeftModel
 

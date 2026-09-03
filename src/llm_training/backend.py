@@ -12,11 +12,22 @@ from .config import GradientCheckpointingConfig, TrainingConfig
 def configure_gradient_checkpointing(
     model: nn.Module,
     config: GradientCheckpointingConfig,
+    *,
+    require_input_grads: bool = False,
 ) -> None:
-    """Enable model-native gradient checkpointing before backend preparation."""
+    """Enable model-native activation checkpointing before backend preparation."""
 
     if not config.enabled:
         return
+
+    if require_input_grads:
+        enable_input_require_grads = getattr(model, "enable_input_require_grads", None)
+        if not callable(enable_input_require_grads):
+            raise TypeError(
+                "adapter training with gradient checkpointing requires the model "
+                "to expose enable_input_require_grads()"
+            )
+        enable_input_require_grads()
 
     enable = getattr(model, "gradient_checkpointing_enable", None)
     if enable is None:

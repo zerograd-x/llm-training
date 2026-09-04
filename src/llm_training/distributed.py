@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 import os
 from pathlib import Path
 from typing import Any, Literal
@@ -146,6 +146,39 @@ class DistributedRuntime:
             )
         return destination
 
+    @contextmanager
+    def model_loading_context(self):
+        """Load full weights before adapter injection and backend preparation.
+
+        Accelerate can register a Transformers ZeRO-3 config even with
+        ``zero3_init_flag=False``. Temporarily suspend that loading hook, then
+        restore it for PEFT collectives and training. This does not implement
+        initialization-time sharding; the initial model must fit on each rank.
+        Use this context for custom ``from_pretrained`` calls made after the
+        runtime is created. ``load_causal_lm`` applies it automatically.
+        """
+        ds = self.config.deepspeed
+        if ds is None or ds.zero_stage != 3:
+            yield
+            return
+
+        from transformers.integrations.deepspeed import (
+            is_deepspeed_zero3_enabled,
+            set_hf_deepspeed_config,
+            unset_hf_deepspeed_config,
+        )
+
+        if not is_deepspeed_zero3_enabled():
+            yield
+            return
+
+        hf_config = self.accelerator.state.deepspeed_plugin.dschf
+        unset_hf_deepspeed_config()
+        try:
+            yield
+        finally:
+            set_hf_deepspeed_config(hf_config)
+
     def load_causal_lm(
         self,
         model_name_or_path: str,
@@ -162,7 +195,7 @@ class DistributedRuntime:
         DDP/DeepSpeed; only remote/cache materialization is ordered.
         """
 
-        with self.local_main_process_first():
+        with self.local_main_process_first(), self.model_loading_context():
             components = load_causal_lm(
                 model_name_or_path,
                 tokenizer_name_or_path=tokenizer_name_or_path,
@@ -171,3 +204,4 @@ class DistributedRuntime:
             )
         self.wait_for_everyone()
         return components
+

@@ -1,4 +1,4 @@
-# Single-GPU validation workers
+# GPU validation workers
 
 These scripts were **reconstructed**, not recovered byte-for-byte from the
 temporary September 4 workers. Their reference is main commit
@@ -71,3 +71,42 @@ and detailed in the matrix. The CPU regressions include later-epoch resume with
 and without dropout and scheduler ownership after optimizer state restoration.
 A documented optimizer-step wrapper warning remains for CPUAdam; actual update
 ordering, LR and resume equivalence are asserted instead of hiding the warning.
+
+## Two-node, two-GPU validation
+
+`multinode_validation.py` coordinates two drivers over a **new shared output
+directory**. `multirank_case.py` executes CUDA/NCCL phases and validates the
+rank, sharding, resume and artifact contracts. Each host must have exactly one
+visible BF16 GPU, the same source/environment, and access to the shared path.
+Allow the two hosts to communicate privately for torchrun/NCCL and shared
+storage. The scripts do not provision cloud infrastructure.
+
+Run these concurrently, one command on each host (replace `NODE0_PRIVATE_IP`):
+
+```bash
+# Node 0
+python tests/gpu/multinode_validation.py /shared/unique-run \
+  --node-rank 0 --master NODE0_PRIVATE_IP
+# Node 1
+python tests/gpu/multinode_validation.py /shared/unique-run \
+  --node-rank 1 --master NODE0_PRIVATE_IP
+```
+
+Both commands must use identical `--cases` and shared directory arguments.
+The cases are `runtime_ddp`, `lora_zero3`, `lora_zero3_gc`, `tt_zero3` and
+`tt_zero3_gc`. Each has prepare, baseline, interrupt, fresh-process resume and
+offline verify phases. Baseline/interrupt/resume each launch one worker per
+host; prepare/verify run on node 0 after the relevant workers exit.
+
+Assertions cover real parameter partitioning, disjoint training batches,
+world-size-aware LR, actual optimizer updates, exact checkpoint/RNG restoration,
+exact interrupted/uninterrupted parameter and output equivalence, frozen/base
+row stability, agreement between ranks, adapter-only gathering, rank-0-only
+serialization and offline adapter/merge reload. The GC cases explicitly use
+`use_reentrant=False`. A timed-out process group is terminated; both exit
+status and result JSON must succeed. Keep the entire shared output, including
+failed attempts, source and environment, before deleting workers.
+
+This topology tests global ranks 0/1 with **local rank 0 on each host**. It does
+not test local CUDA indices 0/1 on one machine or node-local-only checkpoints.
+See the [P0/P1 matrix](../../docs/gpu-p0-p1-validation.md) for the actual run.

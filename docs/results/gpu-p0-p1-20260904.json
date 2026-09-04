@@ -1,0 +1,812 @@
+{
+  "base_main": "40d7fba1676a61017cc44819772987f60e0908da",
+  "topology": "two g6.xlarge hosts, one NVIDIA L4 each; private shared NFS",
+  "world_size": 2,
+  "local_ranks": [
+    0,
+    0
+  ],
+  "runtime_patch": "Temporarily suspend HF ZeRO-3 loading hook in DistributedRuntime.model_loading_context",
+  "source_sha256": {
+    "src/llm_training/optimizer.py": "218c2245c436de7aa4f5ca36a7b9b3cfd13f754d175ffc409ed3c8a1fa915f82",
+    "src/llm_training/adapters.py": "1dd644605d24031b017d36e51e3ac8508f66999c1f26c61c53d9afbad9c6cb10",
+    "src/llm_training/model_introspection.py": "686ad7f4e871aa6a0ee65b1187a1c16787a131aa772c564f6beea4ee690afa60",
+    "src/llm_training/freeze.py": "da7e5ab339170979e2a93d14e5eb3e8fc91fe571bb938308e770d10d85d23e13",
+    "src/llm_training/data.py": "95cb829862abc31b72b0536d25ac21386e0d0bbb79b4935587ef5c0df22c5294",
+    "src/llm_training/backend.py": "e4790e13f8b2e58e5df1aae36537810d0c57270e7433a39c3cb94451c21405fb",
+    "src/llm_training/__init__.py": "6aea99ada90bff41e55e8392bb373577c8eb0f537cad695f1264bbbe7bfb8bda",
+    "src/llm_training/artifacts.py": "504b21b91c31b58156708c65e9133db2a643a8303315aa98057991506057db6f",
+    "src/llm_training/trainer.py": "99fb7667a485c10dcbc09a622853416ecb67981dd5945cef30df1bb1234ba630",
+    "src/llm_training/loss.py": "113d91a45799214b4805838293ee0b9bd7dc49f0743117f8cc90df01be7cff4a",
+    "src/llm_training/model.py": "b9aaa3cbe59e827054a5102cd53a52aca6082c28ed7743d0bee512861e410983",
+    "src/llm_training/scheduler.py": "298a93066831626a2a27cd2593902ba60333053d1f644fd009cd589971c7bb1a",
+    "src/llm_training/distributed.py": "aebcf88c66d24f66c4567877c6bebe1fafcd01312400720782e647a5abaf2f50",
+    "src/llm_training/config.py": "bf0445a793a8a57e0c42c65641c18c89fe3ac809dfc283cb903210f3f04c682e",
+    "src/llm_training/checkpoint/manager.py": "ba8c930ecb18a15d051859a8d79730c8364de8f87c4a472bc73f589e3d674094",
+    "src/llm_training/checkpoint/__init__.py": "e0742c741cc63507c3862d92d95487d6f6b5b4a64b51dea1f29ed5181457067f",
+    "src/llm_training/checkpoint/state.py": "1ccfa18cdbd1b962bb7de5f588b64fef377191e8ba541f5cc05d6daa1c36c63f",
+    "tests/test_backend.py": "28e906cc12ee1a4409bb5f861c2a8d08ddbcb69781bed0d7b91ddfc0402383e8",
+    "tests/test_resume_determinism.py": "5b22d46845b4684674694e5dcf02ed88430a37c6a0d837dd389fc8b39badc6c7",
+    "tests/test_checkpoint.py": "c9ff907d279feb906958c53604dc1c7c3e431e6b8f71e4e0aa9430962b7fbf6b",
+    "tests/test_data.py": "2869f89f63ff013a08e167a9e8c84f6e1dd70e88f69a0f4f9f8bda58648d7b6e",
+    "tests/test_adapters.py": "7564e2b350693ae0056f9ff29cc6a4fe30bab8b750bc666c31fb714575a6aa02",
+    "tests/test_loss.py": "7edbf1274faa5c0b8830e4afbe590803debb1ca12a65734e9f04a9d2e38b9cff",
+    "tests/test_runtime_model_loading.py": "9d3b585db40122f026eea69ca99bf2f2f22819628929c8e2f6f18786ba6c61e4",
+    "tests/test_optimizer_and_export.py": "98229ee62320fdab060f6540c8ffbbf53257d48a9a97dca7a6928b0bd505a1fb",
+    "tests/test_deepspeed_ownership.py": "2888efbdcda95d19938853e04130b1732c3b18ab0c65b63c5eb0aa90d4a40ec2",
+    "tests/test_distributed_runtime_guards.py": "7e5ee843b5310cc35c205adff0d0e8f1e330d1a284697eabd0dd19d89ade6e8c",
+    "tests/test_model_and_freeze.py": "4b97fc9e4e9794debe2eb0d0a62ce8632fd93ba19ed47376ac60702449c162f7",
+    "tests/test_trainer.py": "fdf4a8d9fdcd069bb806f25e1fbcd393a1892c4bd0175e54d0dc05da3c5cbc96",
+    "tests/integration/test_trainable_tokens_training.py": "33ed8204d8c86312477e0b6b29f82a8f0dc87fd17498ef2991d9996a82504bd0",
+    "tests/integration/deepspeed_cpu_worker.py": "fa3aa076911793eac35eb0ef11f34a1ede9d8ea06dd43d5752d523b2fc64298c",
+    "tests/integration/distributed_runtime_worker.py": "b960bcf5fb998a2bfc90c8f5bba402e50ff25efd098a9481e639a20741c652a0",
+    "tests/integration/test_training_data_bridge.py": "137ae1c9b2d275f86647e4c1290f5f981bb3bc9b4475ae0cb403212eecadde70",
+    "tests/integration/test_distributed_runtime.py": "09771e946c140adc8fa2077c8ecdf1befd5048621d03caa6afa4b69f006ae5c1",
+    "tests/integration/test_hf_resume.py": "68d94ae0b5e8418effa06998643e7491839affdff4459adfaefbc4ea7c01ad9e",
+    "tests/integration/test_lora_training.py": "3cbea43186c1a51ec680e122fb9afed11664530e581f822f274e15f6ae08dcb8",
+    "tests/integration/test_deepspeed_cpu.py": "bb9944967f9ab96f4d55a1a4b86765aeb17fe2deeffb045f11add702ee177274",
+    "tests/integration/test_hf_training.py": "a8263febd92fd11b8e845273d53ade148c76abb73760ecda099ddd783450eaea",
+    "tests/gpu/fresh_case.py": "c8c2c1bcabf5c444443d27f4117fff02a6db70b2e2b52f63a71e709c4b65f4b1",
+    "tests/gpu/gpu_validation.py": "6622b810c6bc1fef7f3296202a741af55ae54de0b25d24516f453a8f2d0a009d",
+    "tests/gpu/test_validation_driver.py": "e5a257af306da90f5c714d4e69866b92538e836fc27c22a2f719f88e4b842a1f",
+    "tests/gpu/multirank_case.py": "ea194551a7721e05510e9e30bd330ae14ea1eeeda7921b508e456212fcd8a3d0",
+    "tests/gpu/multinode_validation.py": "10115bf37550cf8b58e45c5f5ce98e350b0265615c9cd38becdb54a63c4bee19",
+    "tests/gpu/tt_probe.py": "fb75d1811908b14ba66522fa3cbcc540557d8c89a8a559010ade1abdbe0c7a95",
+    "tests/gpu/test_gpu_bf16_training.py": "d7bacd42e0201b04aaa180ee1dcdcb9c44b9a4f4019a017945d917ae3516038a"
+  },
+  "matrices": {
+    "p0-node-0": [
+      {
+        "case": "lora_bf16",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.931
+      },
+      {
+        "case": "lora_bf16",
+        "phase": "baseline",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.579
+      },
+      {
+        "case": "lora_bf16",
+        "phase": "interrupt",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.379
+      },
+      {
+        "case": "lora_bf16",
+        "phase": "resume",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.278
+      },
+      {
+        "case": "lora_bf16",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.48
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.028
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "baseline",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.13
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "interrupt",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.03
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "resume",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.031
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.48
+      },
+      {
+        "case": "lora_gc",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.029
+      },
+      {
+        "case": "lora_gc",
+        "phase": "baseline",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.279
+      },
+      {
+        "case": "lora_gc",
+        "phase": "interrupt",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.328
+      },
+      {
+        "case": "lora_gc",
+        "phase": "resume",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.28
+      },
+      {
+        "case": "lora_gc",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.529
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.028
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "baseline",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.03
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "interrupt",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.03
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "resume",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.082
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.53
+      }
+    ],
+    "p0-node-1": [
+      {
+        "case": "tt_bf16",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.687
+      },
+      {
+        "case": "tt_bf16",
+        "phase": "baseline",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.687
+      },
+      {
+        "case": "tt_bf16",
+        "phase": "interrupt",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.386
+      },
+      {
+        "case": "tt_bf16",
+        "phase": "resume",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.385
+      },
+      {
+        "case": "tt_bf16",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.686
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.234
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "baseline",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.687
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "interrupt",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.237
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "resume",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.187
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.587
+      },
+      {
+        "case": "scheduler_zero3",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.086
+      },
+      {
+        "case": "scheduler_zero3",
+        "phase": "baseline",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.688
+      },
+      {
+        "case": "scheduler_zero3",
+        "phase": "interrupt",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.187
+      },
+      {
+        "case": "scheduler_zero3",
+        "phase": "resume",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.137
+      },
+      {
+        "case": "scheduler_zero3",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 4.38
+      },
+      {
+        "case": "offload",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.236
+      },
+      {
+        "case": "offload",
+        "phase": "baseline",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 41.218
+      },
+      {
+        "case": "offload",
+        "phase": "interrupt",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 11.845
+      },
+      {
+        "case": "offload",
+        "phase": "resume",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 11.892
+      },
+      {
+        "case": "offload",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 4.426
+      }
+    ],
+    "p1-run": [
+      {
+        "case": "runtime_ddp",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.032
+      },
+      {
+        "case": "runtime_ddp",
+        "phase": "baseline",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 31.728
+      },
+      {
+        "case": "runtime_ddp",
+        "phase": "interrupt",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 30.829
+      },
+      {
+        "case": "runtime_ddp",
+        "phase": "resume",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 30.678
+      },
+      {
+        "case": "runtime_ddp",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 4.423
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.133
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "baseline",
+        "ok": false,
+        "nodes": [
+          {
+            "ok": false,
+            "returncode": 1
+          },
+          {
+            "ok": false,
+            "returncode": 1
+          }
+        ],
+        "elapsed_seconds": 18.951
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.079
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "baseline",
+        "ok": false,
+        "nodes": [
+          {
+            "ok": false,
+            "returncode": 1
+          },
+          {
+            "ok": false,
+            "returncode": 1
+          }
+        ],
+        "elapsed_seconds": 31.079
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.281
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "baseline",
+        "ok": false,
+        "nodes": [
+          {
+            "ok": false,
+            "returncode": 1
+          },
+          {
+            "ok": false,
+            "returncode": 1
+          }
+        ],
+        "elapsed_seconds": 23.064
+      },
+      {
+        "case": "tt_zero3_gc",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.028
+      },
+      {
+        "case": "tt_zero3_gc",
+        "phase": "baseline",
+        "ok": false,
+        "nodes": [
+          {
+            "ok": false,
+            "returncode": 1
+          },
+          {
+            "ok": false,
+            "returncode": 1
+          }
+        ],
+        "elapsed_seconds": 24.568
+      }
+    ],
+    "p1-rerun": [
+      {
+        "case": "runtime_ddp",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.028
+      },
+      {
+        "case": "runtime_ddp",
+        "phase": "baseline",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 18.555
+      },
+      {
+        "case": "runtime_ddp",
+        "phase": "interrupt",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 10.439
+      },
+      {
+        "case": "runtime_ddp",
+        "phase": "resume",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 25.018
+      },
+      {
+        "case": "runtime_ddp",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 4.473
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.032
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "baseline",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 19.469
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "interrupt",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 29.883
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "resume",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 31.081
+      },
+      {
+        "case": "lora_zero3",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.53
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.028
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "baseline",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 15.595
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "interrupt",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 10.188
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "resume",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 20.054
+      },
+      {
+        "case": "lora_zero3_gc",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.529
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.078
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "baseline",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 15.547
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "interrupt",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 11.688
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "resume",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 11.589
+      },
+      {
+        "case": "tt_zero3",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.883
+      },
+      {
+        "case": "tt_zero3_gc",
+        "phase": "prepare",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 8.135
+      },
+      {
+        "case": "tt_zero3_gc",
+        "phase": "baseline",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 22.212
+      },
+      {
+        "case": "tt_zero3_gc",
+        "phase": "interrupt",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 11.188
+      },
+      {
+        "case": "tt_zero3_gc",
+        "phase": "resume",
+        "ok": true,
+        "nodes": [
+          {
+            "ok": true,
+            "returncode": 0
+          },
+          {
+            "ok": true,
+            "returncode": 0
+          }
+        ],
+        "elapsed_seconds": 12.042
+      },
+      {
+        "case": "tt_zero3_gc",
+        "phase": "verify",
+        "ok": true,
+        "returncode": 0,
+        "elapsed_seconds": 7.881
+      }
+    ]
+  },
+  "evidence_archive_sha256": "6e74c078b42afec41c3c18fd0a94c7ee3d8ea8fae763c36842d5136acbcdb432"
+}

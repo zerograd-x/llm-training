@@ -1,0 +1,114 @@
+{
+  "date": "2026-09-04",
+  "main_merge_commit": "7472aec8fdd9973b4bdd47c590f166c95986ad16",
+  "environment": {
+    "gpu": "NVIDIA L4",
+    "instance_type": "g6.xlarge",
+    "torch": "2.7.1+cu128",
+    "cuda_toolkit": "12.8",
+    "nccl": "2.26.2",
+    "deepspeed": "0.19.6",
+    "accelerate": "1.14.0",
+    "transformers": "5.16.1",
+    "peft": "0.20.0",
+    "ds_skip_cuda_check": false
+  },
+  "single_gpu": [
+    {"case": "LoRA + BF16", "status": "pass"},
+    {"case": "LoRA + ZeRO-3", "status": "pass"},
+    {"case": "LoRA + gradient checkpointing", "status": "pass"},
+    {"case": "LoRA + ZeRO-3 + gradient checkpointing", "status": "pass"},
+    {
+      "case": "LoRA checkpoint -> fresh resume -> adapter save -> merge -> reload",
+      "status": "pass"
+    },
+    {"case": "TrainableTokens + BF16", "status": "pass"},
+    {
+      "case": "TrainableTokens + ZeRO-3, CPU-loaded public path",
+      "status": "pass"
+    },
+    {
+      "case": "Torch AdamW + HF scheduler + ZeRO-3",
+      "status": "pass",
+      "lr_sequence": [0.01, 0.005, 0.0],
+      "warning_classification": "Accelerate/DeepSpeed wrapper artifact"
+    },
+    {
+      "case": "clean CPUAdam offload + ZeRO-3 resume/export/reload",
+      "status": "pass"
+    },
+    {
+      "case": "full/LoRA/TrainableTokens portable workflow",
+      "status": "pass"
+    },
+    {
+      "case": "SmolLM2-135M-Instruct LoRA portable workflow",
+      "status": "pass"
+    }
+  ],
+  "two_node_gpu": [
+    {
+      "case": "uneven DDP resume mid-epoch",
+      "status": "pass",
+      "updates": 6,
+      "eval_examples": 9,
+      "eval_tokens": 23
+    },
+    {
+      "case": "uneven DDP resume at epoch boundary",
+      "status": "pass",
+      "updates": 6,
+      "eval_examples": 9,
+      "eval_tokens": 23
+    },
+    {
+      "case": "full-parameter ZeRO-3 checkpoint/export/reload",
+      "status": "pass",
+      "actual_partitioning": true
+    },
+    {
+      "case": "hybrid LoRA + full-trained base overrides under ZeRO-3",
+      "status": "pass",
+      "actual_partitioning": true
+    },
+    {"case": "rank failure propagation", "status": "pass"},
+    {"case": "materialization owner failure propagation", "status": "pass"},
+    {"case": "damaged checkpoint propagation", "status": "pass"},
+    {"case": "one-rank masked/non-finite loss propagation", "status": "pass"},
+    {
+      "case": "final checkpoint metadata race regression",
+      "status": "pass",
+      "backend": "nccl",
+      "source_tree": "b92a43276dd9c2a9ea9780649926e1067f4e1e75",
+      "ranks": [
+        {
+          "rank": 0,
+          "find_latest_checkpoint_calls": 1,
+          "global_step": 2,
+          "mixed_precision": "bf16",
+          "checkpoint_manifest": true
+        },
+        {
+          "rank": 1,
+          "find_latest_checkpoint_calls": 0,
+          "global_step": 2,
+          "mixed_precision": "bf16",
+          "checkpoint_manifest": true
+        }
+      ]
+    }
+  ],
+  "cpu": {
+    "unit_workflow_tests": 94,
+    "linux_two_rank_hardening_cases": 6,
+    "distributed_custom_metric_error_case": 1,
+    "status": "pass"
+  },
+  "limits": [
+    "tiny synthetic models are used for exact distributed comparisons",
+    "two-node tests use one L4 per host",
+    "model quality is not an acceptance gate",
+    "ZeRO-3 initialization-time partitioning remains unsupported",
+    "performance and long-run stability are not yet characterized"
+  ]
+}

@@ -7,11 +7,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import random
 import sys
 import traceback
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gpu"))
-import fresh_case as helpers
+import numpy as np
 import torch
 from torch.nn import functional as F
 from transformers import AutoModelForCausalLM, GPT2Config, GPT2LMHeadModel
@@ -29,6 +29,54 @@ from llm_training import (
     merge_lora,
 )
 from llm_training.loss import shift_causal_labels
+
+
+def collate(rows):
+    return {key: torch.stack([row[key] for row in rows]) for key in rows[0]}
+
+
+def save(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(value, path)
+
+
+def load(path):
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def snapshot(trainer):
+    model = trainer.accelerator.unwrap_model(trainer.model)
+    params = list(model.parameters())
+    if trainer.config.deepspeed:
+        import deepspeed
+
+        context = deepspeed.zero.GatheredParameters(params, modifier_rank=None)
+    else:
+        context = nullcontext()
+    with context:
+        return {
+            name: parameter.detach().cpu().clone()
+            for name, parameter in model.named_parameters()
+        }
+
+
+def rng():
+    return {
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all(),
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+    }
+
+
+def assert_rng(actual, expected):
+    assert torch.equal(actual["torch"], expected["torch"])
+    assert len(actual["cuda"]) == len(expected["cuda"])
+    assert all(torch.equal(a, b) for a, b in zip(actual["cuda"], expected["cuda"]))
+    assert actual["python"] == expected["python"]
+    assert actual["numpy"][0] == expected["numpy"][0]
+    assert np.array_equal(actual["numpy"][1], expected["numpy"][1])
+    assert actual["numpy"][2:] == expected["numpy"][2:]
 
 
 def write(path, value):
@@ -60,10 +108,8 @@ class Probe(Trainer):
         path = super().save_checkpoint()
         if self.stop_step == self.state.global_step:
             rank = self.runtime.process_index
-            helpers.save(self.root / f"checkpoint-rng-{rank}.pt", helpers.rng())
-            helpers.save(
-                self.root / f"checkpoint-params-{rank}.pt", helpers.snapshot(self)
-            )
+            save(self.root / f"checkpoint-rng-{rank}.pt", rng())
+            save(self.root / f"checkpoint-params-{rank}.pt", snapshot(self))
             raise Stop()
         return path
 
@@ -164,7 +210,7 @@ def train(case, phase, root):
         model=model,
         train_dataset=Rows(),
         eval_dataset=Rows(),
-        collate_fn=helpers.collate,
+        collate_fn=collate,
         config=cfg,
         runtime=runtime,
     )
@@ -206,14 +252,14 @@ def train(case, phase, root):
     stop_step = 2 if case in ("boundary_epoch_ddp", "full_zero3") else 3
     if phase == "resume":
         assert trainer.state.global_step == stop_step
-        helpers.assert_rng(
-            helpers.rng(), helpers.load(root / f"checkpoint-rng-{rank}.pt")
+        assert_rng(
+            rng(), load(root / f"checkpoint-rng-{rank}.pt")
         )
-        before = helpers.snapshot(trainer)
-        saved = helpers.load(root / f"checkpoint-params-{rank}.pt")
+        before = snapshot(trainer)
+        saved = load(root / f"checkpoint-params-{rank}.pt")
         for name in before:
             torch.testing.assert_close(before[name], saved[name], atol=0, rtol=0)
-    before = helpers.snapshot(trainer)
+    before = snapshot(trainer)
     if phase == "interrupt":
         trainer.stop_step = stop_step
     try:
@@ -222,7 +268,7 @@ def train(case, phase, root):
         assert phase == "interrupt"
     else:
         assert phase != "interrupt"
-    after = helpers.snapshot(trainer)
+    after = snapshot(trainer)
     assert any(not torch.equal(before[n], after[n]) for n in trainable)
     for name in set(before) - trainable:
         torch.testing.assert_close(before[name], after[name], atol=0, rtol=0)
@@ -247,12 +293,12 @@ def train(case, phase, root):
         )
         assert trainer.scheduler.state_dict()["last_epoch"] == 12
         assert all(group["lr"] == 0 for group in trainer.optimizer.param_groups)
-        helpers.save(root / f"{phase}-params-{rank}.pt", after)
+        save(root / f"{phase}-params-{rank}.pt", after)
         trainer.model.eval()
         fixed = torch.tensor([[1, 3, 15, 2]], device=runtime.accelerator.device)
         with torch.no_grad(), runtime.accelerator.autocast():
             logits = trainer.model(input_ids=fixed).logits.float().cpu()
-        helpers.save(root / f"{phase}-logits-{rank}.pt", logits)
+        save(root / f"{phase}-logits-{rank}.pt", logits)
         if cfg.lora:
             trainer.save_adapter()
         else:
@@ -279,13 +325,13 @@ def verify(case, root):
         assert all(r["expected_failure"] and r["ok"] for r in records)
         return dict(failure_propagated=True)
     for rank in range(2):
-        a = helpers.load(root / f"baseline-params-{rank}.pt")
-        b = helpers.load(root / f"resume-params-{rank}.pt")
+        a = load(root / f"baseline-params-{rank}.pt")
+        b = load(root / f"resume-params-{rank}.pt")
         for name in a:
             torch.testing.assert_close(a[name], b[name], atol=0, rtol=0)
         torch.testing.assert_close(
-            helpers.load(root / f"baseline-logits-{rank}.pt"),
-            helpers.load(root / f"resume-logits-{rank}.pt"),
+            load(root / f"baseline-logits-{rank}.pt"),
+            load(root / f"resume-logits-{rank}.pt"),
             atol=0,
             rtol=0,
         )
@@ -325,7 +371,7 @@ def verify(case, root):
         logits = (
             model(torch.tensor([[1, 3, 15, 2]], device=device)).logits.float().cpu()
         )
-    reference = helpers.load(root / "resume-logits-0.pt")
+    reference = load(root / "resume-logits-0.pt")
     torch.testing.assert_close(
         logits,
         reference,
@@ -341,7 +387,7 @@ def verify(case, root):
         else nullcontext()
     ):
         for row in Rows():
-            batch = helpers.collate([row])
+            batch = collate([row])
             labels = shift_causal_labels(batch["labels"]).to(device)
             values = model(batch["input_ids"].to(device)).logits.float()
             total += F.cross_entropy(

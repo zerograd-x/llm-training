@@ -35,8 +35,8 @@ reach the runtime. The separate DeepSpeed CPU suite has its own dependency setup
 
 ## GPU
 
-The existing single-GPU and two-node P0/P1 drivers remain available. The new
-hardening driver uses two nodes with one GPU each and a shared filesystem:
+Two maintained GPU drivers cover the current single-GPU and two-node contracts.
+The hardening driver uses two nodes with one GPU each and a shared filesystem:
 
 ```bash
 # Run on both nodes, changing --node-rank to 1 on the second node.
@@ -78,5 +78,5 @@ CPU fallback cannot count as a GPU pass. Configure a matching CUDA toolkit and
 PyTorch build for JIT extensions. Never set `DS_SKIP_CUDA_CHECK` for clean offload
 validation. Normal GitHub CI is CPU-only.
 
-See [phase 1–3 evidence](phase123-validation.md), [P0/P1 evidence](gpu-p0-p1-validation.md)
-and the [original single-GPU matrix](gpu-validation-matrix.md) for actual results.
+See the [consolidated GPU validation matrix](gpu-validation.md) for results,
+versions, evidence and current limits.

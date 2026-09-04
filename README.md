@@ -253,7 +253,7 @@ pip install -e ../llm-training-data
 pytest -m integration tests/integration/test_training_data_bridge.py
 ```
 
-GPU tests are intentionally excluded from normal push/PR CI. For the manual AWS single-GPU BF16 validation path, including EC2 quota, DLAMI, SSM, GPU checks, troubleshooting, and cleanup, see [`docs/aws-gpu-smoke.md`](docs/aws-gpu-smoke.md).
+GPU tests are intentionally excluded from normal push/PR CI. See [the GPU validation matrix and retained drivers](docs/gpu-validation.md).
 
 
 See [the test guide](docs/tests.md) for boundary, evaluation, workflow and GPU validation commands.

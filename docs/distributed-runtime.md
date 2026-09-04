@@ -53,6 +53,12 @@ model materialization + model load
 Trainer reuses the same runtime
 ```
 
+A plain CPU `torchrun` launch needs special care: Accelerate only selects its
+`MULTI_CPU` distributed backend when `Accelerator(cpu=True)` is used. The
+runtime detects `WORLD_SIZE > 1` with no CUDA device and enables that mode so
+CPU integration workers do not silently become independent single-process
+runtimes. DeepSpeed keeps its own accelerator-selection path.
+
 ## Global rank versus local rank
 
 The runtime exposes both global and node-local ownership:
@@ -128,15 +134,28 @@ rank 0 -> batch 0, batch 2, ...
 rank 1 -> batch 1, batch 3, ...
 ```
 
-The trainer's scheduler length is computed from the expected per-rank prepared
-DataLoader length, not the unsharded pre-prepare DataLoader length. Therefore:
+The number of synchronized optimizer updates per epoch is:
 
 ```text
-optimizer updates per epoch
-    = ceil(ceil(unsharded_batches / world_size) / grad_accumulation)
+per_rank_batches
+    = ceil(unsharded_batches / world_size)
+
+optimizer_updates
+    = ceil(per_rank_batches / grad_accumulation)
 ```
 
-for the current default data-loader semantics.
+Scheduler accounting has one additional Accelerate-specific detail. With
+`split_batches=False`, `AcceleratedScheduler` advances the underlying scheduler
+`world_size` times for every synchronized optimizer update. The runtime therefore
+builds the scheduler in underlying-step units:
+
+```text
+scheduler_steps_per_epoch
+    = optimizer_updates * world_size
+```
+
+This preserves the intended LR horizon even when the final batch group is
+uneven and Accelerate repeats data to keep ranks synchronized.
 
 ## Rank ownership by operation
 
@@ -209,7 +228,7 @@ local-rank-0-only materialization                   ✅
 all-rank model construction after materialization  ✅
 rank-sharded DataLoader batches                     ✅
 Trainer reuse of the same DistributedRuntime        ✅
-per-rank scheduler step accounting                  ✅
+distributed scheduler horizon                       ✅
 global/local-main-only side effects                 ✅
 driver-only operation guard                         ✅
 ```

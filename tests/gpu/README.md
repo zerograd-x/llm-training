@@ -48,8 +48,8 @@ explicit BF16 tolerances (atol 0.005, rtol 0.05). These are tiny-model integrati
 checks, not accuracy/performance validation for a production model.
 
 The default TrainableTokens ZeRO-3 case starts from a CPU-loaded model to expose
-the observed initialization problem; no CUDA-preload workaround silently marks
-it passing. For clean offload, the driver uses a new extension cache, rejects an
+the public initialization path; device placement is handled by Trainer,
+without a CUDA-preload workaround in the test. For clean offload, the driver uses a new extension cache, rejects an
 inherited CUDA-check bypass, records nvcc/CPUAdam module information and checks
 the real optimizer class. A clean extension build does not by itself pass the
 remaining training/resume/export phases.
@@ -64,6 +64,10 @@ if its JSON result also says `ok: true`.
 
 ## Current validation status
 
-The driver contract checks have been run locally. The reconstructed GPU workers
-have not yet been run on CUDA. Existing historical results stay separate in the
-matrix; no new GPU pass is claimed for these scripts.
+The September 4 rerun passes all eight cases / 40 fresh-process phases on one
+NVIDIA L4 with the pinned stack above. The fixed implementation also passes
+70 CPU regressions. Original-main failures and exact tested source are archived
+and detailed in the matrix. The CPU regressions include later-epoch resume with
+and without dropout and scheduler ownership after optimizer state restoration.
+A documented optimizer-step wrapper warning remains for CPUAdam; actual update
+ordering, LR and resume equivalence are asserted instead of hiding the warning.

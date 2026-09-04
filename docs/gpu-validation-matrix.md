@@ -1,95 +1,129 @@
-# Single-GPU validation audit — 2026-09-04 UTC
+# Single-GPU validation — 2026-09-04 UTC
 
-## Scope and provenance
+**Fixed source: 8 cases / 40 fresh-process phases passed on one NVIDIA L4.**
+The CPU regression suite passes **70 tests**. Original main passed six complete
+GPU cases and failed two. The [earlier historical audit](gpu-validation-history-20260904.md)
+is retained separately; its outstanding single-card gates are resolved here.
 
-Repository main inspected: `3ba90dd119c4dbf6e67319444dcd46f1f1dbf7a1`.
-Existing runs used an installed `llm-training 0.1.0` wheel reported in the preceding session as built from that commit; the recorded wheel SHA256 is `1267aed934656dcb192f8e5b271eeb8d33a3f6ec3d95ee355066f94fb1fcae30` (J), matching the preceding build report. The source-to-wheel mapping has not been independently reconstructed. No new GPU training was launched during this audit.
+## Source and environment
 
-Installation/runtime log I confirms NVIDIA L4, torch 2.7.1+cu128, CUDA toolkit 12.8,
-DeepSpeed 0.19.6, Accelerate 1.14.0 and Transformers 5.16.1. PEFT 0.20.0
-is reported by the user.
-All results concern one GPU / world size 1. Two-GPU ZeRO-3 remains deferred until quota is increased and execution is authorized.
+Base main: `3ba90dd119c4dbf6e67319444dcd46f1f1dbf7a1`.
+Fixes and permanent tests: [PR #1](https://github.com/zerograd-x/llm-training/pull/1).
+One NVIDIA L4 (`g6.xlarge`, us-west-2), world size 1, Python 3.10,
+torch 2.7.1+cu128, CUDA toolkit 12.8, DeepSpeed 0.19.6, Accelerate 1.14.0,
+Transformers 5.16.1, PEFT 0.20.0, llm-training 0.1.0.
 
-Evidence below is from retrieved SSM stdout/stderr, not just the command status.
-Several workers emit `ok:false` while returning zero, and shell loops end with `exit 0`.
-A successful SSM command is therefore not a suite pass.
+The workers assert actual device, CUDA/BF16 support, versions, world size and
+DeepSpeed stage. Tested core files are archived and committed byte-for-byte:
 
-## Matrix
+- Trainer SHA256: `99fb7667a485c10dcbc09a622853416ecb67981dd5945cef30df1bb1234ba630`
+- Scheduler SHA256: `298a93066831626a2a27cd2593902ba60333053d1f644fd009cd589971c7bb1a`
 
-| Case | Observed result | Remaining gate |
-| --- | --- | --- |
-| Torch optimizer + HF scheduler, ZeRO-3 | Two steps; LR 0.001 → 0; no order warning captured (A) | Full LR trace, actual optimizer update trace, warning capture scope and old/new wrapper comparison |
-| Clean CPU optimizer offload | Fresh-process case reaches step 2 (B); environment alignment reported | Independently verify CPUAdam identity/build log, absence of DS_SKIP_CUDA_CHECK, and offload-specific resume/export |
-| LoRA + BF16 | Two steps and adapter files; trainable names contain LoRA A/B (A) | Isolated CUDA/BF16 assertions and explicit parameter-change audit |
-| LoRA + ZeRO-3 | DeepSpeedEngine, two steps, adapter saved (B) | Numerical artifact equivalence |
-| LoRA + ZeRO-3 + gradient checkpointing | Two steps and adapter saved (B) | Confirm checkpointing mode/config from worker |
-| LoRA checkpoint → fresh resume | Checkpoint loaded, but before=2 and after=2 (B) | Save at step 1; fresh process must perform step 2; compare optimizer/scheduler/RNG/data position with uninterrupted control |
-| LoRA adapter merge → reload | Merge produced finite logits, shape [1,4,32] (B); separate adapter reload also finite (D) | Compare logits against trained adapter; connect artifacts to a resume that actually advances |
-| TrainableTokens GPU | Training and adapter saved; later adapter-state probe confirms selected-token delta changed and merged model has finite logits (F) | Correct effective-row assertion; early base-weight probe reported changed_new=false (C) |
-| TrainableTokens + ZeRO-3, default CPU-loaded model | Fails during PEFT token initialization: CPU tensor broadcast under NCCL (B) | Resolve initialization/device ordering and rerun unmodified public path |
-| TrainableTokens + ZeRO-3, CUDA-preloaded model | Two steps; changed adapter state and finite merged logits (C,F) | Workaround only; old-row stability probe failed, requiring dtype-aligned effective-weight comparison |
-| TrainableTokens fresh resume | Step 1 checkpoint → new process reports before=1, after=2 (D) | Verify backend/config and full state equivalence |
-| CPU/GPU RNG restore | Fresh-process probe reports cpu_equal=true and gpu_equal=true at step 1 (H) | Worker assertions/config unavailable; does not establish subsequent training equivalence |
-| Full-model export reload | In-process reload failed with weight must be 2-D (E); clean-process reload succeeds with embedding shape [32,16] (G) | Treat process isolation as required; do not infer corrupt export from in-process failure |
-| Optimizer parameter coverage | Post-ZeRO wrapper reports zero original params (E,G) | Audit before prepare and map ZeRO-owned parameters; current probe does not establish missing ownership |
-| Two-GPU ZeRO-3 | Not run | Quota increase; true partition/collective and distributed artifact tests |
+## GPU matrix
 
-## Findings and required test changes
+Each complete pass means prepare → uninterrupted baseline → interrupt at step 1
+→ new-process resume to step 2 → new-process artifact verification.
 
-1. Run each independent backend configuration in a separate subprocess. The initial
-   eight-case worker failed on its second DeepSpeed Accelerator because process-global
-   Accelerate state was already initialized.
-2. Aggregate semantic results and return nonzero on any failed assertion or missing
-   case. Preserve individual exit codes, stdout, stderr, versions and source SHA.
-3. Resume from an unfinished run with the same configured horizon. A completed-run
-   restore (2 → 2) validates loading only.
-4. Inspect TrainableTokens adapter/effective weights rather than assuming frozen base
-   embedding rows contain the trained token values. Compare old rows in the same
-   dtype and with ZeRO parameters gathered; evaluate actual selected token ids.
-5. Run offline merge/reload after training workers exit. Compare trained-adapter and
-   merged logits on identical inputs, with stated BF16 tolerances.
-6. Record scheduler LR before and after every real optimizer update, including
-   accumulation boundaries. Current Trainer source calls optimizer.step() before
-   scheduler.step(). The warning was not reproduced here; its classification as an
-   Accelerate/DeepSpeed wrapper artifact remains unproven.
-7. Clean offload validation must assert DS_SKIP_CUDA_CHECK is absent, record nvcc and
-   torch CUDA versions, prove CPUAdam compiled/loaded without a bypass, then exercise
-   checkpoint → fresh resume → export → fresh reload.
+| Case | Original main | Fixed source | Reload max absolute logit error |
+| --- | --- | --- | ---: |
+| LoRA + BF16 | Pass | Pass | 0.0009765625 |
+| LoRA + ZeRO-3 | Pass | Pass | 0.0010986328125 |
+| LoRA + gradient checkpointing | Pass | Pass | 0.0009765625 |
+| LoRA + ZeRO-3 + gradient checkpointing | Pass | Pass | 0.0010986328125 |
+| TrainableTokens + BF16 | Pass | Pass | 0 |
+| TrainableTokens + ZeRO-3, CPU-loaded public path | CPU/NCCL initialization fails | Pass | 0.0009765625 |
+| Torch AdamW + HF scheduler + ZeRO-3 | Pass | Pass | 0.0009765625 |
+| Clean CPUAdam offload + ZeRO-3 | Build/train pass; resumed actual LR fails | Pass | 0.0009765625 |
 
-## Evidence index
+Four microbatches with accumulation 2 exercise actual optimizer boundaries.
+Hooks verify that real optimizer updates precede scheduler advancement and that
+LR follows 0.01 → 0.005 → 0. Checkpoint tensors and RNG are checked upon restore;
+final parameters and training logits match the uninterrupted control exactly,
+and observed batches equal interrupt + resume batches.
 
-SSM instance: `i-001c21699131e7aad`, region `us-west-2`.
-Worker staging bucket: `llm-training-caveat-cleanup-513586111913-20260904`.
+Adapter cases check pre-prepare optimizer coverage, trainable names, parameter
+mutation, frozen parameters and adapter-only file contents. Adapter reload and
+merged-model reload use explicit BF16 tolerances: `atol=0.005, rtol=0.05`.
+TrainableTokens checks effective embedding rows: unselected rows are bit-identical,
+selected rows change, and old rows also remain identical after merge.
+Gradient checkpointing is non-reentrant with model caching disabled.
 
-- A: `86376e11-798b-4b08-9036-7a790a5d0cfe` — original eight-case worker.
-- B: `cc87d424-6a2d-4626-90db-555f678bdf0a` — isolated fresh cases.
-- C: `9c5a5818-7709-46a0-9595-80c80f2537d9` — token row probes.
-- D: `4485307d-8581-466d-afa7-2dc7e0a8ec32` — extra cases and token resume.
-- E: `7d188f31-3fa7-4176-a3c7-4194f92fd003` — regression cases.
-- F: `fc8dac81-1a36-48c7-9f51-61eca1b989b1` — saved token state and merge probe.
-- G: `d8a3d7b1-5cf9-4e68-975a-1c81d4712e7d` — clean-process full-model reload.
+Clean offload builds CPUAdam in a fresh extension directory, records compiler
+commands/module paths, rejects inherited `DS_SKIP_CUDA_CHECK`, and verifies both
+nvcc and torch CUDA are 12.8. The real optimizer is `DeepSpeedCPUAdam`.
+Resume, full-model export and fresh-process reload all pass.
 
-- H: `9a24dcb5-db62-4fff-b525-1a4e3b0c8014` — CPU/GPU RNG restore probe.
-- I: `00bde43a-993a-40d9-9ffd-f5ef9bb7d4e5` — installation and runtime versions.
-- J: `fa598009-ad2c-492a-afe9-0464cdba9297` — wheel checksum.
+## Four defects repaired
 
-## Follow-up source availability
+1. **TrainableTokens initialization device:** PEFT broadcasts selected token
+   weights before Accelerate prepares the model. Trainer now places the model
+   on the rank's CUDA device before TrainableTokens adaptation under ZeRO-3.
+   The test itself still supplies an ordinary CPU-loaded model.
+2. **Extra RNG consumption on resume:** DataLoader iterator creation consumed
+   the global torch RNG. A dedicated loader generator keeps an extra resumed
+   iterator from changing CPU dropout's random sequence.
+3. **Resumed epoch sampling:** New prepared/skip loaders start at iteration zero.
+   Trainer explicitly sets the loader epoch after constructing it, preserving
+   sample order during both the resumed and subsequent epochs.
+4. **Offload scheduler after restore:** AdamW and replacement CPUAdam initially
+   share parameter-group dictionaries. Checkpoint loading replaces CPUAdam's
+   groups, leaving the HF scheduler attached to obsolete groups. Trainer now
+   binds the scheduler to the actual prepared optimizer before restoration.
 
-The user approved reading the three worker scripts. The authorized SSM command
-`b2601ceb-ce03-4c8c-9767-9f4135a4215c` was accepted but remained undelivered.
-EC2 reports that instance termination was initiated at 2026-09-04 04:37:34 UTC,
-before the authorized read request. The original staging bucket returns
-`NoSuchBucket`. This is now a source-availability blocker, not a pending
-permission request. Retained SSM outputs have been preserved locally.
+CPU resume regressions interrupt during the first or second epoch, with or
+without dropout. All four variants failed on original main and pass after the
+repair. Another CPU regression checks scheduler updates after optimizer state
+loading replaces parameter-group dictionaries.
 
-The accessible conversation, its attachment list and local task records were
-searched; no full historical worker source was recovered. Replacement workers
-are now committed under `tests/gpu/` with the same three filenames. They are
-explicitly documented as reconstructed code, not the historical originals.
-See [worker instructions](../tests/gpu/README.md).
+## Scheduler warning diagnosis
 
-The replacement driver passed six local CPU-only contract checks (semantic
-failure, missing output, nonzero exit, success, clean offline environment, and
-CUDA-check bypass rejection). All replacement Python files passed syntax checks.
-Their CUDA training paths remain unrun. A new single-GPU execution is still
-required; missing historical files no longer blocks preparing that run.
+Without offload, no ordering warning was captured. With offload, original main
+warned about scheduler-before-optimizer even though the trace proves CPUAdam
+updates happened first and uninterrupted LR was correct. PyTorch tracked the
+original AdamW step while DeepSpeed called CPUAdam: the warning was a wrapper
+artifact. The resumed LR disconnection above was a separate functional defect.
+
+After rebinding, PyTorch emits an optimizer-step-overridden warning because
+CPUAdam was substituted after scheduler construction. This warning is retained;
+there is no blanket suppression or fabricated step flag. Actual step ordering,
+resumed LR, final parameters and exported logits pass. Relevant upstream code:
+[Accelerate preparation](https://github.com/huggingface/accelerate/blob/v1.14.0/src/accelerate/accelerator.py),
+[DeepSpeed wrappers](https://github.com/huggingface/accelerate/blob/v1.14.0/src/accelerate/utils/deepspeed.py),
+[PyTorch scheduler](https://github.com/pytorch/pytorch/blob/v2.7.1/torch/optim/lr_scheduler.py),
+[PEFT token initialization](https://github.com/huggingface/peft/blob/v0.20.0/src/peft/tuners/trainable_tokens/layer.py).
+
+## Evidence
+
+Run instructions: [tests/gpu](../tests/gpu/README.md).
+Instance: `i-013a896804f5260da`; temporary resource prefix:
+`llm-training-gpu-20260904-r2`.
+
+| Evidence | Identifier / SHA256 |
+| --- | --- |
+| Main GPU run | `71d98f76-fbb6-41ae-af38-2673c2b6be05` |
+| Fixed GPU + 70 CPU tests | `a1f369e3-51ab-4105-b11b-e620a56e1524` |
+| Main CPU resume failures | `5aaeb817-7f19-44f9-965a-d47be1ebfb3c` |
+| Fixed isolated CPU resume | `c554179e-531d-4f8a-b460-0c281caf45f5` |
+| Main source archive | `2d318d3248c8e1d2627c8c177080624ba9f34776830ebfa789892984a194fce4` |
+| Fixed tested source archive | `04010994abaaee860aabe46025ca5f9ef991ed8cf7e1d470a1e4d710b2ce14ab` |
+| Main results archive | `89ed63fa8b6c0c568a3d5213510d3c5308c73b21a09a9e4fcadfa5fbdbee615f` |
+| Fixed results archive | `69d14d7437f37808e286bfab0b742ae072124f8922b7ed7c21aadee486acc076` |
+
+Archives include per-phase JSON/logs, checkpoints, adapters, merged models,
+environment versions and exact tested source. All were downloaded and checksum
+verified before terminating the GPU. Temporary S3 paths are not durable download
+links; retain the delivered local evidence bundle.
+
+## Remaining scope
+
+These tiny GPT-2 fixtures validate correctness on the pinned single-GPU stack.
+They do not establish model quality, throughput, maximum size, or compatibility
+across every permitted dependency version. TrainableTokens CUDA initialization
+places the unpartitioned model on GPU; its full initial footprint must fit.
+ZeRO-3 initialization-time partitioning remains unimplemented.
+
+Next: true multi-rank runtime/NCCL, disjoint data sharding and world-size-aware
+scheduling, then two-GPU LoRA/TrainableTokens ZeRO-3 checkpoint and artifact
+collectives. Quota now reports 8 vCPUs, but this round ran only one GPU.
+Later coverage: realistic models, tied/untied embeddings, uneven accumulation
+and epoch boundaries, other optimizer ownership combinations and performance.

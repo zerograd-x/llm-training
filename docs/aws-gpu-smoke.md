@@ -217,11 +217,14 @@ For ordinary Python refactors, configuration changes, CPU-only checkpoint logic,
 
 ## Extended PEFT and DeepSpeed validation
 
-See [GPU test matrix](gpu-validation-matrix.md) for the 2026-09-04 L4 audit.
-Run backend cases in separate processes; an SSM Success status or zero worker
-exit code alone is insufficient. Require every expected semantic assertion to
-pass, preserve failures, and make the suite return nonzero when any case fails.
-Resume tests must advance from an unfinished checkpoint. Offline merge/reload
-must run after workers exit and compare numerical outputs. TrainableTokens
-checks must inspect adapter/effective rows at consistent precision. Two-GPU
-ZeRO-3 remains deferred pending quota increase.
+See the [GPU test matrix](gpu-validation-matrix.md) and
+[permanent workers](../tests/gpu/README.md). The September 4 rerun passes all
+8 single-L4 cases / 40 isolated phases and 70 CPU regressions on the fixed code.
+Run each backend and lifecycle phase in a fresh process, require both a zero
+exit status and successful assertions, and use a new output directory. Tests
+must compare actual parameter updates, LR, data order, RNG, and artifact logits.
+
+For clean CPU offload, use matching torch/CUDA versions and a fresh extension
+cache with DS_SKIP_CUDA_CHECK absent. Preserve exact source, package versions,
+all logs and artifacts locally before deleting temporary cloud resources.
+Two-GPU tests are separate work; this suite intentionally uses only GPU 0.

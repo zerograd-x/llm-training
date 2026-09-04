@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import pytest
 import torch
 from accelerate.utils.deepspeed import DummyOptim, DummyScheduler
@@ -13,7 +15,7 @@ from llm_training import (
     TrainingConfig,
 )
 from llm_training.optimizer import build_training_optimizer
-from llm_training.scheduler import build_training_scheduler
+from llm_training.scheduler import bind_scheduler_optimizer, build_training_scheduler
 
 
 def test_default_deepspeed_path_keeps_torch_optimizer_and_scheduler(tmp_path) -> None:
@@ -115,3 +117,30 @@ def test_deepspeed_warmup_scheduler_rejects_zero_warmup(tmp_path) -> None:
             config,
             num_training_steps=2,
         )
+
+
+def test_scheduler_updates_replacement_optimizer_after_state_restore(tmp_path) -> None:
+    parameter = nn.Parameter(torch.ones(2))
+    original = AdamW([parameter], lr=0.01)
+    config = TrainingConfig(
+        output_dir=str(tmp_path), scheduler=SchedulerConfig(name="linear", warmup_steps=0)
+    )
+    scheduler = build_training_scheduler(original, config, num_training_steps=2)
+    replacement = AdamW(original.param_groups, lr=0.01)
+    assert original.param_groups[0] is replacement.param_groups[0]
+    bind_scheduler_optimizer(scheduler, replacement)
+
+    parameter.grad = torch.ones_like(parameter)
+    replacement.step()
+    scheduler.step()
+    assert replacement.param_groups[0]["lr"] == 0.005
+
+    saved = deepcopy(replacement.state_dict())
+    previous_group = replacement.param_groups[0]
+    replacement.load_state_dict(saved)
+    assert replacement.param_groups[0] is not previous_group
+    parameter.grad = torch.ones_like(parameter)
+    replacement.step()
+    scheduler.step()
+    assert replacement.param_groups[0]["lr"] == 0
+

@@ -9,6 +9,29 @@ from transformers import get_scheduler
 from .config import SchedulerConfig, TrainingConfig
 
 
+def bind_scheduler_optimizer(scheduler: Any, prepared_optimizer: Any) -> None:
+    """Keep a Torch scheduler attached to the optimizer that owns updates.
+
+    Accelerate may replace AdamW with CPUAdam for DeepSpeed offload. Their
+    parameter-group dictionaries initially alias, masking the old reference,
+    until checkpoint loading replaces CPUAdam's groups. Follow the optimizer
+    object itself so restored and future groups remain visible to the scheduler.
+    DeepSpeed-owned scheduler placeholders require no rebinding.
+    """
+    if not isinstance(scheduler, LRScheduler):
+        return
+    seen = set()
+    optimizer = prepared_optimizer
+    while hasattr(optimizer, "optimizer"):
+        if id(optimizer) in seen:
+            raise TypeError("Cannot resolve the prepared optimizer for a Torch scheduler")
+        seen.add(id(optimizer))
+        optimizer = optimizer.optimizer
+    if not isinstance(optimizer, Optimizer):
+        raise TypeError("A Torch scheduler requires a prepared Torch optimizer")
+    scheduler.optimizer = optimizer
+
+
 def resolve_warmup_steps(
     config: SchedulerConfig,
     *,

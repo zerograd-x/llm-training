@@ -82,6 +82,14 @@ before the authorized read request. The original staging bucket returns
 `NoSuchBucket`. This is now a source-availability blocker, not a pending
 permission request. Retained SSM outputs have been preserved locally.
 
-Recover the worker scripts from another copy to audit their exact assertions.
-Without them, a replacement harness and a new GPU run are required to resolve
-the outstanding validation gates. No additional GPU was launched in this audit.
+The accessible conversation, its attachment list and local task records were
+searched; no full historical worker source was recovered. Replacement workers
+are now committed under `tests/gpu/` with the same three filenames. They are
+explicitly documented as reconstructed code, not the historical originals.
+See [worker instructions](../tests/gpu/README.md).
+
+The replacement driver passed six local CPU-only contract checks (semantic
+failure, missing output, nonzero exit, success, clean offline environment, and
+CUDA-check bypass rejection). All replacement Python files passed syntax checks.
+Their CUDA training paths remain unrun. A new single-GPU execution is still
+required; missing historical files no longer blocks preparing that run.

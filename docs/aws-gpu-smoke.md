@@ -214,3 +214,14 @@ Run the AWS GPU smoke test after changes that can plausibly behave differently o
 - distributed-training work before expanding to multi-GPU tests.
 
 For ordinary Python refactors, configuration changes, CPU-only checkpoint logic, or documentation changes, normal CI is sufficient.
+
+## Extended PEFT and DeepSpeed validation
+
+See [GPU test matrix](gpu-validation-matrix.md) for the 2026-09-04 L4 audit.
+Run backend cases in separate processes; an SSM Success status or zero worker
+exit code alone is insufficient. Require every expected semantic assertion to
+pass, preserve failures, and make the suite return nonzero when any case fails.
+Resume tests must advance from an unfinished checkpoint. Offline merge/reload
+must run after workers exit and compare numerical outputs. TrainableTokens
+checks must inspect adapter/effective rows at consistent precision. Two-GPU
+ZeRO-3 remains deferred pending quota increase.

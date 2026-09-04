@@ -28,7 +28,7 @@ from .distributed import DistributedRuntime
 from .loss import BaseLoss, load_loss, shift_causal_labels, validate_loss
 from .model import save_causal_lm
 from .optimizer import build_training_optimizer
-from .scheduler import build_training_scheduler
+from .scheduler import bind_scheduler_optimizer, build_training_scheduler
 
 
 class EpochSeededRandomSampler(Sampler[int]):
@@ -107,6 +107,19 @@ class Trainer:
         )
         self.loss_fn.to(self.accelerator.device)
 
+        if (
+            config.trainable_tokens is not None
+            and ds is not None
+            and ds.zero_stage == 3
+            and self.accelerator.device.type == "cuda"
+        ):
+            # PEFT initializes selected token rows with an NCCL broadcast as
+            # soon as ZeRO-3 is configured, before Accelerate prepares the model.
+            # Its source tensor inherits the base weight's device. Place the
+            # unpartitioned model on this rank's GPU before that collective.
+            # Init-time partitioning is not supported by this runtime yet.
+            model.to(self.accelerator.device)
+
         model, self.adaptation_summary = adapt_model_for_training(
             model,
             freeze=config.freeze,
@@ -128,6 +141,10 @@ class Trainer:
             batch_size=config.per_device_batch_size,
             sampler=self._sampler,
             collate_fn=collate_fn,
+            # DataLoader creates a base seed whenever a new iterator starts.
+            # Keep this separate from model RNG so resuming mid-epoch does not
+            # consume an extra dropout/random-operation seed.
+            generator=torch.Generator().manual_seed(config.seed),
         )
         if len(dataloader) == 0:
             raise ValueError("Training dataset produced an empty dataloader")
@@ -159,6 +176,8 @@ class Trainer:
         self.model, self.optimizer, self.train_dataloader, self.scheduler = (
             self.accelerator.prepare(model, optimizer, dataloader, scheduler)
         )
+        if ds is not None:
+            bind_scheduler_optimizer(scheduler, self.optimizer)
         self.state = TrainerState()
 
         if config.checkpoint.resume_from is not None:
@@ -183,6 +202,12 @@ class Trainer:
                     self.train_dataloader,
                     start_batch,
                 )
+
+            # A fresh prepared/skip loader starts at iteration zero and may
+            # otherwise reset the sampler to epoch zero inside __iter__.
+            set_epoch = getattr(epoch_loader, "set_epoch", None)
+            if callable(set_epoch):
+                set_epoch(epoch)
 
             for batch_index, batch in enumerate(epoch_loader, start=start_batch):
                 with self.accelerator.accumulate(self.model):

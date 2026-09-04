@@ -172,7 +172,7 @@ For generic S3/HDFS/shared-filesystem materialization, use `runtime.materialize_
 
 The earlier lifecycle problem—rank identity not existing until after model loading—has been removed by `DistributedRuntime`: the backend/process group can now exist before `from_pretrained()`.
 
-However, **ZeRO-3 initialization-time parameter partitioning is still not enabled**. `build_accelerator(...)` currently constructs the `DeepSpeedPlugin` with `zero3_init_flag=False`, so the lifecycle is:
+However, **ZeRO-3 initialization-time parameter partitioning is still not enabled**. The plugin uses `zero3_init_flag=False`, and `runtime.load_causal_lm(...)` explicitly suspends the Transformers ZeRO-3 loading hook. Accelerate 1.14.0 registers this hook even when that flag is false; without the loading context, loading after runtime creation can partition weights before LoRA/TrainableTokens adaptation and break shape discovery. The runtime restores the hook immediately after loading, including on exceptions, so PEFT collectives and backend preparation retain their DeepSpeed configuration. The lifecycle is:
 
 ```text
 DistributedRuntime
@@ -187,6 +187,18 @@ DistributedRuntime
 Therefore a large model may still need enough host/device memory to be materialized before ZeRO-3 takes ownership. Moving the backend earlier was a prerequisite for future init-time partitioning, but it does not by itself make `from_pretrained()` ZeRO-3-sharded.
 
 Supporting true initialization-time partitioning requires a separate loading path that enters the appropriate DeepSpeed/Transformers initialization context during model construction and is validated on real multi-GPU hardware.
+
+For custom model construction after creating the runtime, use the same context:
+
+```python
+with runtime.model_loading_context():
+    model = AutoModelForCausalLM.from_pretrained(model_path)
+trainer = Trainer(model=model, config=config, runtime=runtime,
+                  train_dataset=train_dataset, collate_fn=collate_fn)
+```
+
+This context temporarily changes Transformers' process-global loading state;
+do not concurrently load another model on a different thread inside it.
 
 ## Checkpoint and artifact ownership
 

@@ -122,8 +122,8 @@ across every permitted dependency version. TrainableTokens CUDA initialization
 places the unpartitioned model on GPU; its full initial footprint must fit.
 ZeRO-3 initialization-time partitioning remains unimplemented.
 
-Next: true multi-rank runtime/NCCL, disjoint data sharding and world-size-aware
-scheduling, then two-GPU LoRA/TrainableTokens ZeRO-3 checkpoint and artifact
-collectives. Quota now reports 8 vCPUs, but this round ran only one GPU.
+This single-GPU round was followed by the [P0/P1 two-node run](gpu-p0-p1-validation.md),
+which validates NCCL, disjoint data sharding, world-size-aware scheduling and
+LoRA/TrainableTokens ZeRO-3 checkpoint and artifact collectives on two L4 hosts.
 Later coverage: realistic models, tied/untied embeddings, uneven accumulation
 and epoch boundaries, other optimizer ownership combinations and performance.

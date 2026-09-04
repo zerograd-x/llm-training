@@ -102,6 +102,13 @@ all local ranks construct their own model object from the completed cache
 This is intentional. Data-parallel/DeepSpeed workers each need a model object;
 rank 0 should own remote/cache materialization, not the only model instance.
 
+For ZeRO-3, `load_causal_lm` also temporarily suspends Transformers' implicit
+initialization-time sharding hook, restoring it after loading. The complete
+model must be available for adapter injection before `accelerator.prepare`.
+Custom `from_pretrained` calls made after runtime creation must use
+`with runtime.model_loading_context():`; see the
+[loading contract](deepspeed.md#zero-3-model-loading-limitation).
+
 For non-Hugging-Face storage, use `materialize_path(...)`:
 
 ```python
@@ -233,7 +240,8 @@ global/local-main-only side effects                 ✅
 driver-only operation guard                         ✅
 ```
 
-This establishes the generic multi-process lifecycle, but it is not a substitute
-for real multi-GPU ZeRO-3 validation. GPU ZeRO-3 still needs explicit tests for
-parameter partitioning, reduce-scatter/all-gather behavior, sharded adapter
-state, and distributed checkpoint/resume.
+The [P0/P1 GPU run](gpu-p0-p1-validation.md) additionally validates two L4
+hosts using NCCL and real ZeRO-3 partitions, sharded adapter export and
+distributed checkpoint/resume. Global ranks are 0/1 and local rank is 0 on
+both hosts. Same-host local ranks 0/1 and broader model/configuration coverage
+remain pending.

@@ -10,16 +10,17 @@ storage transports stay outside this repository.
 Foundation                                      ✅
 Phase 1  PEFT adaptation foundation             ✅
 Phase 2  LoRA                                   ✅
-Phase 3  TrainableTokens                        ✅ CPU / DeepSpeed CPU
-Phase 4  adapter + offline merge lifecycle      ✅ CPU / DeepSpeed CPU
-Phase 5  PEFT + distributed hardening           🟡 multi-rank ZeRO-3 pending
+Phase 3  TrainableTokens                        ✅ CPU / single + two-node GPU
+Phase 4  adapter + offline merge lifecycle      ✅ CPU / single + two-node GPU
+Phase 5  PEFT + distributed hardening           🟡 two-node smoke passed; broader coverage pending
 Phase 6  Muon / richer optimizers               ❌
 Phase 7  evaluation framework                   ❌
 Phase 8  advanced distributed / observability   ❌
 ```
 
-“Done” above means the feature's implemented CPU paths have integration tests.
-It does not imply that a multi-rank GPU/ZeRO-3 path has been validated.
+Validation is scoped to the documented fixtures and dependency stack. See the
+[P0/P1 GPU matrix](gpu-p0-p1-validation.md) for single-L4 and two-node evidence;
+this is not blanket validation of every model, topology or configuration.
 
 ---
 
@@ -223,8 +224,9 @@ configured ZeRO-3 they enter `deepspeed.zero.GatheredParameters` only around
 adapter parameters and, for hybrid LoRA, the additional full-trained base
 overrides.
 
-This is the intended multi-rank design, but real multi-rank ZeRO-3 artifact
-saving remains Phase 5 validation work.
+Adapter-only LoRA and TrainableTokens gather/save are validated on two L4
+nodes with real ZeRO-3 partitions and shared checkpoint storage. Hybrid LoRA
+base-override gather/save remains pending on real multi-GPU hardware.
 
 Storage-specific concepts such as HDFS/S3 upload paths do not appear in these
 APIs. Publishing remains the responsibility of the artifact-transfer layer.
@@ -245,22 +247,24 @@ adapter save after resume                         ✅
 offline merged-model equivalence                  ✅
 ```
 
-Still required before claiming distributed ZeRO-3 support:
+The September 4 P1 run additionally validates two-node NCCL, actual ZeRO-3
+partitions, adapter-only gathering and rank-0 serialization, LoRA/TrainableTokens
+with non-reentrant gradient checkpointing, distributed checkpoint/resume and
+offline merge/reload. Both ranks restore RNG/data position and match their
+uninterrupted baselines exactly. See [P0/P1 evidence](gpu-p0-p1-validation.md).
 
-- 2+ GPU multi-rank ZeRO-3 training
-- actual adapter parameter partitioning behavior
-- NCCL reduce-scatter/all-gather lifecycle
-- adapter-only gather/save from sharded parameters
-- hybrid base-override gather/save
-- TrainableTokens under real ZeRO-3
-- gradient-checkpoint recomputation behavior with partitioned adapter/base
-  tensors
-- distributed checkpoint/resume and offline merge
+Remaining distributed coverage:
 
-The older reference forced reentrant gradient checkpointing for its ZeRO-3
-environment because non-reentrant recomputation checks observed partitioned
-parameter shape changes. This runtime keeps `use_reentrant` explicit until that
-behavior is reproduced and validated on the supported multi-rank stack.
+- two different local CUDA indices on one multi-GPU host
+- hybrid LoRA with full-trained base overrides under ZeRO-3
+- uneven batches/accumulation and multi-epoch distributed resume
+- larger representative models, tied/untied embeddings and alternative GC modes
+- distributed offload and additional optimizer/scheduler ownership combinations
+- node failure, restart and node-local checkpoint storage
+- performance, peak memory and longer-run numerical stability
+
+Non-reentrant GC passes the pinned tiny-GPT-2 two-node tests; this does not
+resolve compatibility for every architecture or dependency combination.
 
 A second future item is ZeRO-3 initialization-time partitioning. The current
 lifecycle materializes the complete HF model before the backend is prepared.
@@ -343,13 +347,16 @@ This validation repaired TrainableTokens CPU/NCCL initialization, resumed CPU
 RNG consumption, resumed/subsequent epoch sampling and offload scheduler binding
 after optimizer restoration. One documented PyTorch optimizer-wrapper warning
 remains, with actual step ordering and LR verified. Init-time partitioning and
-real multi-rank GPU behavior remain unvalidated. Quota is now 8 vCPUs; no two-GPU
-run was performed in this single-card round.
+real multi-rank GPU behavior were not validated in that single-card round.
+The subsequent [P0/P1 round](gpu-p0-p1-validation.md) reran all eight single-GPU
+cases on main and passed five two-node GPU cases after fixing the runtime
+model-loading context. The 8-vCPU quota permitted two g6.xlarge nodes, each
+with one L4; initialization-time partitioning remains unsupported.
 
 ## Priority from here
 
 ```text
-1. real multi-rank PEFT / ZeRO-3 validation when GPU infrastructure is used
+1. broaden distributed coverage beyond the validated two-node tiny-model cases
 2. Muon and richer optimizer policies
 3. evaluation framework
 4. ZeRO-3 init-time loading / profiling / advanced distributed features

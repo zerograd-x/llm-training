@@ -46,6 +46,24 @@ def raise_if_any_rank_failed(error: Exception | None, operation: str) -> None:
         raise RuntimeError(f"{operation} failed: {details}") from error
 
 
+def broadcast_main_process_bool(value: bool) -> bool:
+    """Broadcast a rank-zero decision to every active process."""
+
+    if (
+        not torch.distributed.is_initialized()
+        or torch.distributed.get_world_size() == 1
+    ):
+        return value
+    device = (
+        torch.device("cuda", torch.cuda.current_device())
+        if torch.distributed.get_backend() == "nccl"
+        else torch.device("cpu")
+    )
+    decision = torch.tensor(int(value), device=device)
+    torch.distributed.broadcast(decision, src=0)
+    return bool(decision.item())
+
+
 def active_world_size() -> int:
     """Return the active distributed world size without initializing a backend."""
 

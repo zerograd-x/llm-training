@@ -24,7 +24,11 @@ from .checkpoint import (
     save_training_checkpoint,
 )
 from .config import TrainingConfig
-from .distributed import DistributedRuntime, raise_if_any_rank_failed
+from .distributed import (
+    DistributedRuntime,
+    broadcast_main_process_bool,
+    raise_if_any_rank_failed,
+)
 from .evaluation import EvaluationMetric, evaluate_model
 from .loss import BaseLoss, load_loss, shift_causal_labels, validate_loss
 from .model import save_causal_lm
@@ -313,21 +317,33 @@ class Trainer:
                     self.evaluate()
                 self.state.last_eval_epoch = self.state.epoch
 
-        latest = find_latest_checkpoint(self.config.output_dir)
-        latest_step = None
-        if latest is not None:
+        needs_final_checkpoint = False
+        error = None
+        if self.accelerator.is_main_process:
             try:
-                latest_step = int(latest.name.rsplit("-", 1)[1])
-            except (IndexError, ValueError):
+                latest = find_latest_checkpoint(self.config.output_dir)
                 latest_step = None
-        latest_state = (
-            TrainerState.load(latest / "trainer_state.json")
-            if latest is not None
-            else None
+                if latest is not None:
+                    try:
+                        latest_step = int(latest.name.rsplit("-", 1)[1])
+                    except (IndexError, ValueError):
+                        latest_step = None
+                latest_state = (
+                    TrainerState.load(latest / "trainer_state.json")
+                    if latest is not None
+                    else None
+                )
+                needs_final_checkpoint = self.state.global_step > 0 and (
+                    latest_step != self.state.global_step
+                    or latest_state != self.state
+                )
+            except Exception as exc:
+                error = exc
+        raise_if_any_rank_failed(error, "Final checkpoint inspection")
+        needs_final_checkpoint = broadcast_main_process_bool(
+            needs_final_checkpoint
         )
-        if self.state.global_step > 0 and (
-            latest_step != self.state.global_step or latest_state != self.state
-        ):
+        if needs_final_checkpoint:
             self.save_checkpoint()
 
         return self.state

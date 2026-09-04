@@ -331,17 +331,20 @@ Later work includes:
 
 ---
 
-## Single-GPU validation audit — 2026-09-04
+## Single-GPU validation — 2026-09-04
 
-See [GPU test matrix](gpu-validation-matrix.md) for evidence and remaining gates.
-Existing L4 runs exercise LoRA BF16, single-rank ZeRO-3 and gradient checkpointing,
-but the original eight-case worker did not pass all cases. Independent cases
-must use fresh processes and propagate semantic assertion failures.
+All eight single-L4 cases pass, including 40 fresh-process phases and 70 CPU
+regressions. See the [GPU matrix](gpu-validation-matrix.md) for exact versions,
+assertions, evidence and limits. LoRA BF16/ZeRO-3/checkpointing, TrainableTokens
+BF16/ZeRO-3, advancing resume, adapter save/merge/reload, scheduler tracing and
+clean CPUAdam offload/resume/export are validated on tiny local models.
 
-Before expanding to multiple GPUs, complete advancing LoRA resume and numerical
-adapter/merge equivalence, resolve TrainableTokens CPU/NCCL initialization and
-effective-row checks, trace the scheduler warning, and verify clean CPUAdam
-build plus offload resume/export. Two-GPU ZeRO-3 is deferred until quota increases.
+This validation repaired TrainableTokens CPU/NCCL initialization, resumed CPU
+RNG consumption, resumed/subsequent epoch sampling and offload scheduler binding
+after optimizer restoration. One documented PyTorch optimizer-wrapper warning
+remains, with actual step ordering and LR verified. Init-time partitioning and
+real multi-rank GPU behavior remain unvalidated. Quota is now 8 vCPUs; no two-GPU
+run was performed in this single-card round.
 
 ## Priority from here
 
@@ -380,3 +383,4 @@ These rules should remain true as the project grows:
 - Distributed metrics must represent all participating ranks.
 - Features are not marked multi-GPU/ZeRO-3 supported until real multi-rank tests
   cover training, checkpoint/resume, and export.
+

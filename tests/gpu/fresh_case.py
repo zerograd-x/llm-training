@@ -1,7 +1,7 @@
 """Fresh-process GPU validation phases, reconstructed from main's test contracts.
 
 This is new code, not the lost historical script. It intentionally exercises the
-unmodified CPU-loaded TrainableTokens path, including its known ZeRO-3 failure.
+public CPU-loaded TrainableTokens path, including ZeRO-3 initialization.
 """
 from __future__ import annotations
 

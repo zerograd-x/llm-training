@@ -335,3 +335,4 @@ class Trainer:
             destination,
             accelerator=self.accelerator,
         )
+

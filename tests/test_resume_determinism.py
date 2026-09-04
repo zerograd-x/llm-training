@@ -73,3 +73,4 @@ def test_mid_epoch_resume_matches_uninterrupted_dropout_training(tmp_path, dropo
     assert unwrap(continuous.model).seen == unwrap(interrupted.model).seen + unwrap(resumed.model).seen
     for name, parameter in resumed.accelerator.unwrap_model(resumed.model).named_parameters():
         torch.testing.assert_close(parameter.detach().cpu(), expected[name], rtol=0, atol=0)
+

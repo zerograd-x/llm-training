@@ -135,16 +135,21 @@ class Trainer:
         optimizer = optimizer or build_training_optimizer(model, config)
 
         # Accelerate's default split_batches=False assigns different complete
-        # batches to each data-parallel process. The scheduler therefore needs
-        # the number of optimizer updates *per process*, not the unsharded
-        # DataLoader length visible before accelerator.prepare(...).
+        # batches to each process, then AcceleratedScheduler advances the
+        # underlying scheduler ``num_processes`` times for every synchronized
+        # optimizer update. Build the scheduler horizon in those underlying
+        # scheduler-step units. This also handles uneven final batch groups,
+        # where Accelerate pads/evenly repeats batches across ranks.
         batches_per_process = math.ceil(
             len(dataloader) / self.accelerator.num_processes
         )
         updates_per_epoch = math.ceil(
             batches_per_process / config.gradient_accumulation_steps
         )
-        total_training_steps = updates_per_epoch * config.num_epochs
+        scheduler_steps_per_epoch = (
+            updates_per_epoch * self.accelerator.num_processes
+        )
+        total_training_steps = scheduler_steps_per_epoch * config.num_epochs
         scheduler = scheduler or build_training_scheduler(
             optimizer,
             config,

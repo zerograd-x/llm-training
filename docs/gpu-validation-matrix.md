@@ -3,10 +3,11 @@
 ## Scope and provenance
 
 Repository main inspected: `3ba90dd119c4dbf6e67319444dcd46f1f1dbf7a1`.
-Existing runs used an installed `llm-training 0.1.0` wheel reported in the preceding session as built from that commit; this audit has not independently reverified the installed source hash. No new GPU training was launched during this audit.
+Existing runs used an installed `llm-training 0.1.0` wheel reported in the preceding session as built from that commit; the recorded wheel SHA256 is `1267aed934656dcb192f8e5b271eeb8d33a3f6ec3d95ee355066f94fb1fcae30` (J), matching the preceding build report. The source-to-wheel mapping has not been independently reconstructed. No new GPU training was launched during this audit.
 
-Reported environment: NVIDIA L4, torch 2.7.1+cu128, CUDA toolkit 12.8,
-DeepSpeed 0.19.6, Accelerate 1.14.0, Transformers 5.16.1, PEFT 0.20.0.
+Installation/runtime log I confirms NVIDIA L4, torch 2.7.1+cu128, CUDA toolkit 12.8,
+DeepSpeed 0.19.6, Accelerate 1.14.0 and Transformers 5.16.1. PEFT 0.20.0
+is reported by the user.
 All results concern one GPU / world size 1. Two-GPU ZeRO-3 remains deferred until quota is increased and execution is authorized.
 
 Evidence below is from retrieved SSM stdout/stderr, not just the command status.
@@ -28,6 +29,7 @@ A successful SSM command is therefore not a suite pass.
 | TrainableTokens + ZeRO-3, default CPU-loaded model | Fails during PEFT token initialization: CPU tensor broadcast under NCCL (B) | Resolve initialization/device ordering and rerun unmodified public path |
 | TrainableTokens + ZeRO-3, CUDA-preloaded model | Two steps; changed adapter state and finite merged logits (C,F) | Workaround only; old-row stability probe failed, requiring dtype-aligned effective-weight comparison |
 | TrainableTokens fresh resume | Step 1 checkpoint → new process reports before=1, after=2 (D) | Verify backend/config and full state equivalence |
+| CPU/GPU RNG restore | Fresh-process probe reports cpu_equal=true and gpu_equal=true at step 1 (H) | Worker assertions/config unavailable; does not establish subsequent training equivalence |
 | Full-model export reload | In-process reload failed with weight must be 2-D (E); clean-process reload succeeds with embedding shape [32,16] (G) | Treat process isolation as required; do not infer corrupt export from in-process failure |
 | Optimizer parameter coverage | Post-ZeRO wrapper reports zero original params (E,G) | Audit before prepare and map ZeRO-owned parameters; current probe does not establish missing ownership |
 | Two-GPU ZeRO-3 | Not run | Quota increase; true partition/collective and distributed artifact tests |
@@ -67,6 +69,19 @@ Worker staging bucket: `llm-training-caveat-cleanup-513586111913-20260904`.
 - F: `fc8dac81-1a36-48c7-9f51-61eca1b989b1` — saved token state and merge probe.
 - G: `d8a3d7b1-5cf9-4e68-975a-1c81d4712e7d` — clean-process full-model reload.
 
-Worker-source inspection through a new SSM command was blocked by automatic
-approval review. Worker assertions and unresolved behavior must be inspected
-before promoting these observations to complete validation.
+- H: `9a24dcb5-db62-4fff-b525-1a4e3b0c8014` — CPU/GPU RNG restore probe.
+- I: `00bde43a-993a-40d9-9ffd-f5ef9bb7d4e5` — installation and runtime versions.
+- J: `fa598009-ad2c-492a-afe9-0464cdba9297` — wheel checksum.
+
+## Follow-up source availability
+
+The user approved reading the three worker scripts. The authorized SSM command
+`b2601ceb-ce03-4c8c-9767-9f4135a4215c` was accepted but remained undelivered.
+EC2 reports that instance termination was initiated at 2026-09-04 04:37:34 UTC,
+before the authorized read request. The original staging bucket returns
+`NoSuchBucket`. This is now a source-availability blocker, not a pending
+permission request. Retained SSM outputs have been preserved locally.
+
+Recover the worker scripts from another copy to audit their exact assertions.
+Without them, a replacement harness and a new GPU run are required to resolve
+the outstanding validation gates. No additional GPU was launched in this audit.

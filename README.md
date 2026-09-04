@@ -77,6 +77,10 @@ training state / adapter / merged model
 model-artifact-transfer   # optional publishing layer
 ```
 
+The [portable workflow design](docs/train_causal_lm_workflow.md) describes how
+these components can be composed using plain Python and ordinary paths. It
+distinguishes implemented training APIs from planned end-to-end features.
+
 ## Minimal usage
 
 ```python
@@ -248,3 +252,4 @@ pytest -m integration tests/integration/test_training_data_bridge.py
 ```
 
 GPU tests are intentionally excluded from normal push/PR CI. For the manual AWS single-GPU BF16 validation path, including EC2 quota, DLAMI, SSM, GPU checks, troubleshooting, and cleanup, see [`docs/aws-gpu-smoke.md`](docs/aws-gpu-smoke.md).
+

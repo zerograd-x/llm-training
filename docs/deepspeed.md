@@ -166,7 +166,7 @@ trainer = Trainer(
 
 The runtime owns one Accelerator/process-group instance for the whole worker lifecycle. Local rank 0 is allowed to populate the node-local Hugging Face cache before sibling ranks enter `from_pretrained(...)`; all ranks still construct their own model object. `Trainer` reuses the same Accelerator rather than creating a second distributed runtime.
 
-For generic S3/HDFS/shared-filesystem materialization, use `runtime.materialize_path(...)` with `scope="local"` for node-local disks or `scope="global"` for a filesystem visible to every node. See [`distributed-runtime.md`](distributed-runtime.md).
+For model/cache materialization from local or shared storage, use `runtime.materialize_path(...)` with `scope="local"` for node-local disks or `scope="global"` for a filesystem visible to every node. See [`distributed-runtime.md`](distributed-runtime.md).
 
 ## ZeRO-3 model loading limitation
 

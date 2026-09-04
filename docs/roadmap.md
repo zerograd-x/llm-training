@@ -4,6 +4,11 @@ This roadmap tracks reusable capabilities in `llm-training`. Application-specifi
 data systems, orchestration frameworks, serving engines, retrieval logic, and
 storage transports stay outside this repository.
 
+The [portable workflow design](train_causal_lm_workflow.md) defines a plain
+Python/local-filesystem path through data preparation, optional vocabulary
+expansion, training, export and optional inference/evaluation. No organization
+platform, remote scheduler or storage service is required by that design.
+
 ## Current status
 
 ```text
@@ -104,7 +109,7 @@ Implemented:
 - offline merge into a plain Hugging Face model
 - numerical equivalence tests between trained PEFT and merged model
 
-### Important design difference from the older reference
+### Independent adaptation and freezing policies
 
 LoRA placement is intentionally **not** derived from
 `FreezeConfig.train_last_n_layers`. `FreezeConfig` controls full-trained base
@@ -156,18 +161,16 @@ LoRA + TrainableTokens
 FreezeConfig + TrainableTokens
 ```
 
-The older reference had a dangerous LoRA+TrainableTokens path where sequential
-PEFT wrapping could replace the previously created LoRA model. This runtime
-fails early instead. Current PEFT has a native LoRA
-`trainable_token_indices` mechanism; combined LoRA + partial-token training can
-be added later as an explicit, independently tested feature.
+Combined LoRA + partial-token training requires an explicit adaptation and
+artifact contract. Sequentially wrapping standalone adapters can replace an
+existing adapter, so unsupported combinations fail before training. A combined
+implementation can use PEFT's native `trainable_token_indices` mechanism once
+its optimizer, checkpoint and merge behavior is independently tested.
 
-The reference also allowed “enabled + zero added tokens” to warn and fall back.
-Here, presence of `TrainableTokensConfig` means the user explicitly requested
-that training regime, so `n_tokens_added <= 0` is a configuration error.
+Presence of `TrainableTokensConfig` explicitly requests partial-token training;
+`n_tokens_added <= 0` is a configuration error.
 
-See `docs/trainable_tokens.md` for the detailed contract and reference
-comparison.
+See `docs/trainable_tokens.md` for the complete adaptation contract.
 
 ---
 
@@ -228,8 +231,8 @@ Adapter-only LoRA and TrainableTokens gather/save are validated on two L4
 nodes with real ZeRO-3 partitions and shared checkpoint storage. Hybrid LoRA
 base-override gather/save remains pending on real multi-GPU hardware.
 
-Storage-specific concepts such as HDFS/S3 upload paths do not appear in these
-APIs. Publishing remains the responsibility of the artifact-transfer layer.
+These APIs accept ordinary model and adapter paths. Optional artifact transfer
+is supplied by the caller and is independent of training.
 
 ---
 

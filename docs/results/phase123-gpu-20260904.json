@@ -123,6 +123,9 @@
     },
     {
       "issue": "portable single-rank DeepSpeed launch implicitly attempted MPI discovery"
+    },
+    {
+      "issue": "final checkpoint metadata inspection raced rank-zero checkpoint creation in distributed training"
     }
   ],
   "limits": [

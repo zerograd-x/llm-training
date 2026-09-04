@@ -25,6 +25,7 @@ New focused suites:
 | `test_portable_workflow.py` | Full/LoRA/TrainableTokens raw-example workflow, actual collator, distinct training/merge/inference processes, explicit split validation |
 | `integration/test_distributed_evaluation.py` | Globally reduced custom accuracy; mismatched statistic widths and rank-local callback exceptions propagate without hanging |
 | `integration/test_hardening.py` | Two-rank Gloo boundaries, fresh-process resume, global evaluation and asymmetric failures |
+| `integration/test_distributed_runtime.py` | Rank ownership, data sharding, scheduler horizon and a deterministic final-checkpoint metadata race |
 
 The distributed hardening test uses Linux. The pinned Accelerate/PyTorch pair
 selects an unsupported MPS barrier on macOS; that test explicitly skips there.

@@ -3,8 +3,10 @@
 Implementation starts from main `eaecf279f51b9cf2d5813334fd4dd9492d9ab7f7`.
 Companion data source: `7589e4f6ae716451292f1714b09de7082a20103c`.
 
-Two runtime fixes were required: incomplete accumulation normalization and single-process
-model loading attempting a DeepSpeed barrier before its process group existed.
+Four runtime fixes were required: incomplete accumulation normalization,
+single-process model loading attempting a DeepSpeed barrier before its process
+group existed, implicit MPI discovery in the portable DeepSpeed launch, and a
+final-checkpoint inspection race between rank zero and its peers.
 The workflow also launches its DeepSpeed training stage through a one-rank PyTorch
 launcher, avoiding an implicit MPI discovery dependency.
 
@@ -12,6 +14,8 @@ The partial-accumulation numerical test reproduced an underweighted final window
 before the fix (maximum parameter difference 0.01945 in its SGD fixture). Training
 now divides by the actual number of microbatches in that window. The training
 objective remains the mean of microbatch means; evaluation is global token NLL.
+Only rank zero now inspects final checkpoint metadata, then broadcasts the save
+decision so every rank enters checkpoint collectives together.
 
 | Area | Current evidence |
 |---|---|

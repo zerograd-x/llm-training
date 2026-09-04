@@ -63,6 +63,10 @@ These tests establish prompt failure propagation, not elastic restart/recovery.
 Single-GPU portable workflow:
 
 ```bash
+# Focused LoRA, TrainableTokens, scheduler and clean-offload lifecycle matrix.
+python tests/gpu/gpu_validation.py /local/new-matrix-run
+
+# Portable train/merge/generate workflow.
 python tests/gpu/portable_validation.py /local/new-tiny-run
 python tests/gpu/portable_validation.py /local/new-pretrained-run --pretrained
 ```

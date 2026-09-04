@@ -70,12 +70,15 @@ parameters and exported logits now match.
 
 ## Retained GPU drivers
 
-Only two manual drivers remain:
+Three manual entry points remain:
 
 ```bash
 # Run on both nodes; use --node-rank 1 on the second node.
 python tests/gpu/hardening_validation.py /shared/new-run \
   --node-rank 0 --master PRIVATE_ADDRESS_OF_NODE_0
+
+# One L4, focused lifecycle/scheduler/offload matrix.
+python tests/gpu/gpu_validation.py /local/new-matrix-run
 
 # One L4, local tiny model.
 python tests/gpu/portable_validation.py /local/new-tiny-run
@@ -84,10 +87,12 @@ python tests/gpu/portable_validation.py /local/new-tiny-run
 python tests/gpu/portable_validation.py /local/new-pretrained-run --pretrained
 ```
 
-`hardening_validation.py` covers distributed resume, ZeRO-3 artifacts and
-asymmetric failures. `portable_validation.py` covers full, LoRA and
-TrainableTokens workflows with BF16, ZeRO-3, validation, manifests, merge or
-export, reload and generation.
+`gpu_validation.py` covers the focused LoRA, TrainableTokens, scheduler and
+clean CPUAdam lifecycles. `hardening_validation.py` covers distributed resume,
+ZeRO-3 artifacts and asymmetric failures. `portable_validation.py` covers full,
+LoRA and TrainableTokens workflows with BF16, ZeRO-3, validation, manifests,
+merge or export, reload and generation. The focused driver has two support
+modules in the same directory; they are not separate entry points.
 
 Use a fresh output directory. GPU drivers reject CPU fallback. CPUAdam validation
 requires a CUDA toolkit matching the PyTorch CUDA build.

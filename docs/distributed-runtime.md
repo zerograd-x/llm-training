@@ -240,7 +240,7 @@ global/local-main-only side effects                 ✅
 driver-only operation guard                         ✅
 ```
 
-The [P0/P1 GPU run](gpu-p0-p1-validation.md) additionally validates two L4
+The [GPU validation](gpu-validation.md) additionally validates two L4
 hosts using NCCL and real ZeRO-3 partitions, sharded adapter export and
 distributed checkpoint/resume. Global ranks are 0/1 and local rank is 0 on
 both hosts. Same-host local ranks 0/1 and broader model/configuration coverage

@@ -100,7 +100,7 @@ bottom of an otherwise frozen network; autograd still needs a path through the
 frozen transformer blocks.
 
 `use_reentrant` remains an explicit runtime setting. Non-reentrant GC passes
-on the pinned two-node tiny-model stack in the [P0/P1 matrix](gpu-p0-p1-validation.md).
+on the pinned two-node tiny-model stack in the [GPU validation matrix](gpu-validation.md).
 Other model/backend combinations still need their own validation before a
 universal checkpointing mode can be selected.
 

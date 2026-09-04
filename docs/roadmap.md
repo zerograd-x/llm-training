@@ -24,7 +24,7 @@ Phase 8  advanced distributed / observability   ❌
 ```
 
 Validation is scoped to the documented fixtures and dependency stack. See the
-[P0/P1 GPU matrix](gpu-p0-p1-validation.md) for single-L4 and two-node evidence;
+[GPU validation matrix](gpu-validation.md) for single-L4 and two-node evidence;
 this is not blanket validation of every model, topology or configuration.
 
 ---
@@ -254,7 +254,7 @@ The September 4 P1 run additionally validates two-node NCCL, actual ZeRO-3
 partitions, adapter-only gathering and rank-0 serialization, LoRA/TrainableTokens
 with non-reentrant gradient checkpointing, distributed checkpoint/resume and
 offline merge/reload. Both ranks restore RNG/data position and match their
-uninterrupted baselines exactly. See [P0/P1 evidence](gpu-p0-p1-validation.md).
+uninterrupted baselines exactly. See [GPU validation evidence](gpu-validation.md).
 
 Remaining distributed coverage:
 
@@ -334,7 +334,7 @@ Later work includes:
 ## Single-GPU validation — 2026-09-04
 
 All eight single-L4 cases pass, including 40 fresh-process phases and 70 CPU
-regressions. See the [GPU matrix](gpu-validation-matrix.md) for exact versions,
+regressions. See the [GPU validation matrix](gpu-validation.md) for exact versions,
 assertions, evidence and limits. LoRA BF16/ZeRO-3/checkpointing, TrainableTokens
 BF16/ZeRO-3, advancing resume, adapter save/merge/reload, scheduler tracing and
 clean CPUAdam offload/resume/export are validated on tiny local models.
@@ -344,7 +344,7 @@ RNG consumption, resumed/subsequent epoch sampling and offload scheduler binding
 after optimizer restoration. One documented PyTorch optimizer-wrapper warning
 remains, with actual step ordering and LR verified. Init-time partitioning and
 real multi-rank GPU behavior were not validated in that single-card round.
-The subsequent [P0/P1 round](gpu-p0-p1-validation.md) reran all eight single-GPU
+The subsequent [two-node GPU round](gpu-validation.md) reran all eight single-GPU
 cases on main and passed five two-node GPU cases after fixing the runtime
 model-loading context. The 8-vCPU quota permitted two g6.xlarge nodes, each
 with one L4; initialization-time partitioning remains unsupported.
@@ -361,7 +361,7 @@ The approved implementation order is:
 3. Portable workflow: real data-package collator, vocabulary expansion with
    actual IDs, artifact manifests, separate train/merge/generation processes.
 
-Implementation and test evidence are tracked in [phase 1–3 validation](phase123-validation.md).
+Implementation and test evidence are tracked in [GPU validation](gpu-validation.md).
 A test being implemented does not by itself establish GPU support.
 
 The following **step 4 items are roadmap only**, with no implementation added in

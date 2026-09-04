@@ -24,7 +24,12 @@ from .checkpoint import (
     save_training_checkpoint,
 )
 from .config import TrainingConfig
-from .distributed import DistributedRuntime
+from .distributed import (
+    DistributedRuntime,
+    broadcast_main_process_bool,
+    raise_if_any_rank_failed,
+)
+from .evaluation import EvaluationMetric, evaluate_model
 from .loss import BaseLoss, load_loss, shift_causal_labels, validate_loss
 from .model import save_causal_lm
 from .optimizer import build_training_optimizer
@@ -66,6 +71,9 @@ class Trainer:
         scheduler: LRScheduler | None = None,
         loss_fn: BaseLoss | None = None,
         runtime: DistributedRuntime | None = None,
+        eval_dataset: Dataset[Any] | None = None,
+        eval_collate_fn: Callable | None = None,
+        eval_metrics: tuple[EvaluationMetric, ...] = (),
     ) -> None:
         config.validate()
         set_seed(config.seed)
@@ -97,13 +105,23 @@ class Trainer:
             )
 
         self.config = config
+        if eval_dataset is not None and len(eval_dataset) == 0:
+            raise ValueError("Evaluation dataset is empty")
+        self.eval_dataset = eval_dataset
+        self.eval_collate_fn = eval_collate_fn or collate_fn
+        self.eval_metrics = eval_metrics
+        self.evaluation_history = []
         self.tokenizer = tokenizer
         self.runtime = runtime or DistributedRuntime(config)
         self.runtime.ensure_config(config)
         self.accelerator = self.runtime.accelerator
-        self.loss_fn = validate_loss(loss_fn) if loss_fn is not None else load_loss(
-            config.loss.module_path,
-            config.loss.kwargs,
+        self.loss_fn = (
+            validate_loss(loss_fn)
+            if loss_fn is not None
+            else load_loss(
+                config.loss.module_path,
+                config.loss.kwargs,
+            )
         )
         self.loss_fn.to(self.accelerator.device)
 
@@ -163,9 +181,7 @@ class Trainer:
         updates_per_epoch = math.ceil(
             batches_per_process / config.gradient_accumulation_steps
         )
-        scheduler_steps_per_epoch = (
-            updates_per_epoch * self.accelerator.num_processes
-        )
+        scheduler_steps_per_epoch = updates_per_epoch * self.accelerator.num_processes
         total_training_steps = scheduler_steps_per_epoch * config.num_epochs
         scheduler = scheduler or build_training_scheduler(
             optimizer,
@@ -211,8 +227,14 @@ class Trainer:
 
             for batch_index, batch in enumerate(epoch_loader, start=start_batch):
                 with self.accelerator.accumulate(self.model):
-                    if "labels" not in batch:
-                        raise KeyError("Training batch must contain labels")
+                    raise_if_any_rank_failed(
+                        (
+                            None
+                            if "labels" in batch
+                            else KeyError("Training batch must contain labels")
+                        ),
+                        "Training batch validation",
+                    )
                     labels = batch["labels"]
                     model_inputs = {
                         key: value for key, value in batch.items() if key != "labels"
@@ -224,14 +246,24 @@ class Trainer:
                         raise ValueError("Model forward must return logits")
 
                     loss = self.loss_fn(logits, shift_causal_labels(labels))
+                    error = None
                     if loss.ndim != 0:
-                        raise ValueError("loss_fn must return a scalar tensor")
-                    if not bool(torch.isfinite(loss.detach()).item()):
-                        raise FloatingPointError(
+                        error = ValueError("loss_fn must return a scalar tensor")
+                    elif not bool(torch.isfinite(loss.detach()).item()):
+                        error = FloatingPointError(
                             f"Non-finite loss before backward: {loss.detach().item()}"
                         )
+                    raise_if_any_rank_failed(error, "Loss validation")
 
-                    self.accelerator.backward(loss)
+                    # Backends divide by the configured accumulation factor.
+                    # The final window may contain fewer microbatches: normalize
+                    # by its actual size so its gradient is not underweighted.
+                    accumulation = self.config.gradient_accumulation_steps
+                    window_start = (batch_index // accumulation) * accumulation
+                    window_size = min(
+                        accumulation, len(self.train_dataloader) - window_start
+                    )
+                    self.accelerator.backward(loss * (accumulation / window_size))
 
                     if (
                         self.accelerator.sync_gradients
@@ -263,25 +295,89 @@ class Trainer:
                         running_updates = 0
 
                     save_every = self.config.checkpoint.save_every_steps
+                    eval_every = self.config.evaluation.every_steps
+                    if (
+                        self.eval_dataset is not None
+                        and eval_every
+                        and self.state.global_step % eval_every == 0
+                    ):
+                        self.evaluate()
                     if save_every and self.state.global_step % save_every == 0:
                         self.save_checkpoint()
 
             self.state.epoch = epoch + 1
             self.state.batch_in_epoch = 0
+            every_epochs = self.config.evaluation.every_epochs
+            if (
+                self.eval_dataset is not None
+                and every_epochs
+                and self.state.epoch % every_epochs == 0
+            ):
+                if self.state.last_eval_step != self.state.global_step:
+                    self.evaluate()
+                self.state.last_eval_epoch = self.state.epoch
 
-        latest = find_latest_checkpoint(self.config.output_dir)
-        latest_step = None
-        if latest is not None:
+        needs_final_checkpoint = False
+        error = None
+        if self.accelerator.is_main_process:
             try:
-                latest_step = int(latest.name.rsplit("-", 1)[1])
-            except (IndexError, ValueError):
+                latest = find_latest_checkpoint(self.config.output_dir)
                 latest_step = None
-        if self.state.global_step > 0 and latest_step != self.state.global_step:
+                if latest is not None:
+                    try:
+                        latest_step = int(latest.name.rsplit("-", 1)[1])
+                    except (IndexError, ValueError):
+                        latest_step = None
+                latest_state = (
+                    TrainerState.load(latest / "trainer_state.json")
+                    if latest is not None
+                    else None
+                )
+                needs_final_checkpoint = self.state.global_step > 0 and (
+                    latest_step != self.state.global_step
+                    or latest_state != self.state
+                )
+            except Exception as exc:
+                error = exc
+        raise_if_any_rank_failed(error, "Final checkpoint inspection")
+        needs_final_checkpoint = broadcast_main_process_bool(
+            needs_final_checkpoint
+        )
+        if needs_final_checkpoint:
             self.save_checkpoint()
 
         return self.state
 
+    def evaluate(self, dataset=None) -> dict[str, float]:
+        if not self.accelerator.sync_gradients:
+            raise RuntimeError(
+                "Evaluation requires a completed gradient accumulation boundary"
+            )
+        dataset = self.eval_dataset if dataset is None else dataset
+        if dataset is None:
+            raise ValueError("No evaluation dataset was supplied")
+        result = evaluate_model(
+            self.model,
+            self.accelerator,
+            dataset,
+            self.eval_collate_fn,
+            batch_size=self.config.evaluation.batch_size
+            or self.config.per_device_batch_size,
+            seed=self.config.seed,
+            metrics=self.eval_metrics,
+        )
+        self.state.last_eval_step = self.state.global_step
+        self.evaluation_history.append(
+            dict(step=self.state.global_step, epoch=self.state.epoch, **result)
+        )
+        self.accelerator.print(f"evaluation step={self.state.global_step} {result}")
+        return result
+
     def save_checkpoint(self) -> Path:
+        if not self.accelerator.sync_gradients:
+            raise RuntimeError(
+                "Checkpoint requires a completed gradient accumulation boundary"
+            )
         return save_training_checkpoint(
             self.accelerator,
             output_dir=self.config.output_dir,
@@ -335,4 +431,3 @@ class Trainer:
             destination,
             accelerator=self.accelerator,
         )
-

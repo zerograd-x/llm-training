@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import time
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -102,6 +103,19 @@ def build_local_hf_artifact(destination: Path, *, owner_rank: int) -> None:
     (destination / "materialized_by_rank.txt").write_text(f"{owner_rank}\n")
 
 
+class RaceAmplifyingTrainer(Trainer):
+    """Expose a final-checkpoint directory before rank zero writes metadata."""
+
+    def save_checkpoint(self):
+        if self.runtime.is_main_process:
+            checkpoint_dir = Path(self.config.output_dir) / (
+                f"checkpoint-{self.state.global_step:08d}"
+            )
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            time.sleep(0.25)
+        return super().save_checkpoint()
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: distributed_runtime_worker.py <output-dir>")
@@ -138,7 +152,7 @@ def main() -> None:
     for batch in prepared_loader:
         seen_ids.extend(int(value) for value in batch.detach().cpu().tolist())
 
-    trainer = Trainer(
+    trainer = RaceAmplifyingTrainer(
         model=components.model,
         tokenizer=components.tokenizer,
         train_dataset=TinyLMDataset(),

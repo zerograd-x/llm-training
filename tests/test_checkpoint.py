@@ -1,3 +1,4 @@
+import pytest
 from accelerate import Accelerator
 import torch
 from torch import nn
@@ -5,10 +6,16 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
 from llm_training import TrainingConfig
-from llm_training.checkpoint import TrainerState, load_training_checkpoint, save_training_checkpoint
+from llm_training.checkpoint import (
+    TrainerState,
+    load_training_checkpoint,
+    save_training_checkpoint,
+)
 
 
-def test_checkpoint_roundtrip_restores_model_optimizer_scheduler_and_rng(tmp_path) -> None:
+def test_checkpoint_roundtrip_restores_model_optimizer_scheduler_and_rng(
+    tmp_path,
+) -> None:
     accelerator = Accelerator()
     model = nn.Linear(4, 2)
     optimizer = AdamW(model.parameters(), lr=0.01)
@@ -48,3 +55,31 @@ def test_checkpoint_roundtrip_restores_model_optimizer_scheduler_and_rng(tmp_pat
     assert torch.equal(accelerator.unwrap_model(model).weight, saved_weight)
     assert optimizer.param_groups[0]["lr"] == saved_lr
     assert torch.equal(actual_random, expected_random)
+
+
+@pytest.mark.parametrize("damage", ["missing", "truncated", "unfinished"])
+def test_incomplete_checkpoint_rejected_before_loading_runtime(
+    tmp_path, monkeypatch, damage
+):
+    accelerator = Accelerator()
+    model = nn.Linear(2, 2)
+    accelerator.prepare(model)
+    path = save_training_checkpoint(
+        accelerator,
+        output_dir=tmp_path,
+        state=TrainerState(global_step=1),
+        config=TrainingConfig(output_dir=str(tmp_path)),
+    )
+    called = []
+    monkeypatch.setattr(accelerator, "load_state", lambda *args: called.append(True))
+    if damage == "unfinished":
+        (path / "checkpoint_manifest.json").unlink()
+    else:
+        victim = next(path.glob("random_states*"))
+        if damage == "missing":
+            victim.unlink()
+        else:
+            victim.write_bytes(b"incomplete")
+    with pytest.raises(FileNotFoundError, match="[Cc]heckpoint"):
+        load_training_checkpoint(accelerator, path)
+    assert not called

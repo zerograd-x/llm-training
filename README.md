@@ -28,6 +28,8 @@ The first version focuses on one golden path:
 - deterministic epoch sampling
 - checkpoint/save/resume of model, optimizer, scheduler, RNG, and trainer position
 - a thin adapter for `llm-training-data` column-batch collators
+- scheduled global token-weighted validation loss/perplexity and additive metrics
+- a portable workflow with vocabulary preparation, artifact manifests and fresh-process generation
 
 Serving, data-processing systems, domain-specific model wrappers, and other application-specific extensions stay outside the core runtime.
 
@@ -77,9 +79,9 @@ training state / adapter / merged model
 model-artifact-transfer   # optional publishing layer
 ```
 
-The [portable workflow design](docs/train_causal_lm_workflow.md) describes how
-these components can be composed using plain Python and ordinary paths. It
-distinguishes implemented training APIs from planned end-to-end features.
+The [portable workflow](docs/train_causal_lm_workflow.md) composes these components
+using plain Python and local paths, including separate train/merge/inference
+processes. See [evaluation](docs/evaluation.md) for validation metrics and schedules.
 
 ## Minimal usage
 
@@ -210,7 +212,7 @@ config = TrainingConfig(
 
 This path uses Accelerate `DummyOptim` and `DummyScheduler` placeholders until `accelerator.prepare(...)`, where DeepSpeed creates the real implementations. A Torch optimizer with a DeepSpeed-owned scheduler is also supported. A DeepSpeed-owned optimizer with a Torch/Hugging Face scheduler is intentionally deferred because it requires constructing that scheduler only after the real DeepSpeed optimizer exists.
 
-ZeRO-3 partitions parameters after `accelerator.prepare(...)`. The current API does not yet partition parameters during `from_pretrained()` itself, because model loading still happens before the training backend is constructed. Real multi-rank ZeRO-3 PEFT artifact saving remains a separate validation item; adapter save code is designed to gather only required adapter/hybrid tensors rather than a full model.
+ZeRO-3 partitions parameters after `accelerator.prepare(...)`. The current API does not yet partition parameters during `from_pretrained()` itself, and each rank must initially hold a complete model. Adapter save gathers only required adapter/hybrid tensors. See the GPU matrices for the exact validated models, modes and topologies.
 
 See [`docs/deepspeed.md`](docs/deepspeed.md) for ownership combinations, ZeRO stages, offload settings, initialization-time limitations, and export behavior.
 
@@ -226,7 +228,7 @@ checkpoint-00001000/
 └── tokenizer/
 ```
 
-`TrainerState` records the next epoch/batch position, so a resumed single-process run can continue at the next batch rather than restarting the epoch.
+`TrainerState` records the next epoch/batch position and evaluation position. Checkpoint completion markers and file inventories reject unfinished or missing runtime files before restore. Saving/evaluation requires a completed accumulation boundary. Partial final accumulation windows use their actual microbatch count. See [test contracts](docs/tests.md) for resume and failure coverage.
 
 ## Tests
 
@@ -253,3 +255,5 @@ pytest -m integration tests/integration/test_training_data_bridge.py
 
 GPU tests are intentionally excluded from normal push/PR CI. For the manual AWS single-GPU BF16 validation path, including EC2 quota, DLAMI, SSM, GPU checks, troubleshooting, and cleanup, see [`docs/aws-gpu-smoke.md`](docs/aws-gpu-smoke.md).
 
+
+See [the test guide](docs/tests.md) for boundary, evaluation, workflow and GPU validation commands.

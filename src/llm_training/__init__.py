@@ -19,6 +19,7 @@ from .checkpoint import (
 )
 from .config import (
     CheckpointConfig,
+    EvaluationConfig,
     DeepSpeedConfig,
     DeepSpeedOptimizerConfig,
     DeepSpeedSchedulerConfig,
@@ -54,11 +55,23 @@ from .model_introspection import (
     weights_are_tied,
 )
 from .trainer import Trainer
+from .evaluation import EvaluationMetric
+from .manifest import ArtifactManifest, write_artifact_manifest
+from .vocabulary import VocabularyResult, expand_vocabulary
+from .workflow import WorkflowResult, run_training_workflow
 
 __all__ = [
     "BaseLoss",
     "CausalLMComponents",
     "CheckpointConfig",
+    "EvaluationConfig",
+    "EvaluationMetric",
+    "ArtifactManifest",
+    "VocabularyResult",
+    "WorkflowResult",
+    "expand_vocabulary",
+    "run_training_workflow",
+    "write_artifact_manifest",
     "DeepSpeedConfig",
     "DeepSpeedOptimizerConfig",
     "DeepSpeedSchedulerConfig",

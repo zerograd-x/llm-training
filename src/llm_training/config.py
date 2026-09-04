@@ -130,6 +130,13 @@ class CheckpointConfig:
 
 
 @dataclass(frozen=True)
+class EvaluationConfig:
+    batch_size: int | None = None
+    every_steps: int | None = None
+    every_epochs: int | None = 1
+
+
+@dataclass(frozen=True)
 class TrainingConfig:
     output_dir: str
     num_epochs: int = 1
@@ -150,11 +157,16 @@ class TrainingConfig:
     )
     deepspeed: DeepSpeedConfig | None = None
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def validate(self) -> None:
+        for name in ("batch_size", "every_steps", "every_epochs"):
+            value = getattr(self.evaluation, name)
+            if value is not None and value <= 0:
+                raise ValueError(f"evaluation.{name} must be > 0 when set")
         if self.num_epochs <= 0:
             raise ValueError("num_epochs must be > 0")
         if self.per_device_batch_size <= 0:
@@ -175,7 +187,9 @@ class TrainingConfig:
             ):
                 raise ValueError("freeze.train_last_n_layers must be >= 0 or None")
             if any(not prefix.strip() for prefix in self.freeze.trainable_prefixes):
-                raise ValueError("freeze.trainable_prefixes must not contain empty prefixes")
+                raise ValueError(
+                    "freeze.trainable_prefixes must not contain empty prefixes"
+                )
 
         if self.lora is not None:
             lora = self.lora
@@ -240,7 +254,9 @@ class TrainingConfig:
                     "deepspeed.offload_param_device must be one of: none, cpu, nvme"
                 )
             if ds.zero_stage < 2 and ds.offload_optimizer_device != "none":
-                raise ValueError("optimizer offload requires DeepSpeed ZeRO stage 2 or 3")
+                raise ValueError(
+                    "optimizer offload requires DeepSpeed ZeRO stage 2 or 3"
+                )
             if ds.zero_stage != 3 and ds.offload_param_device != "none":
                 raise ValueError("parameter offload requires DeepSpeed ZeRO stage 3")
             if (
@@ -288,7 +304,10 @@ class TrainingConfig:
                         f"settings: {', '.join(overlap)}"
                     )
 
-        if self.checkpoint.save_every_steps is not None and self.checkpoint.save_every_steps <= 0:
+        if (
+            self.checkpoint.save_every_steps is not None
+            and self.checkpoint.save_every_steps <= 0
+        ):
             raise ValueError("checkpoint.save_every_steps must be > 0 when set")
         if self.checkpoint.keep_last is not None and self.checkpoint.keep_last <= 0:
             raise ValueError("checkpoint.keep_last must be > 0 when set")

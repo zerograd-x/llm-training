@@ -4,7 +4,7 @@ This roadmap tracks reusable capabilities in `llm-training`. Application-specifi
 data systems, orchestration frameworks, serving engines, retrieval logic, and
 storage transports stay outside this repository.
 
-The [portable workflow design](train_causal_lm_workflow.md) defines a plain
+The [portable workflow](train_causal_lm_workflow.md) defines a plain
 Python/local-filesystem path through data preparation, optional vocabulary
 expansion, training, export and optional inference/evaluation. No organization
 platform, remote scheduler or storage service is required by that design.
@@ -17,9 +17,9 @@ Phase 1  PEFT adaptation foundation             ✅
 Phase 2  LoRA                                   ✅
 Phase 3  TrainableTokens                        ✅ CPU / single + two-node GPU
 Phase 4  adapter + offline merge lifecycle      ✅ CPU / single + two-node GPU
-Phase 5  PEFT + distributed hardening           🟡 two-node smoke passed; broader coverage pending
+Phase 5  PEFT + distributed hardening           🟡 uneven/hybrid/full/failure GPU suite passed; broader models remain
 Phase 6  Muon / richer optimizers               ❌
-Phase 7  evaluation framework                   ❌
+Phase 7  evaluation framework                   ✅ first implementation
 Phase 8  advanced distributed / observability   ❌
 ```
 
@@ -227,9 +227,9 @@ configured ZeRO-3 they enter `deepspeed.zero.GatheredParameters` only around
 adapter parameters and, for hybrid LoRA, the additional full-trained base
 overrides.
 
-Adapter-only LoRA and TrainableTokens gather/save are validated on two L4
-nodes with real ZeRO-3 partitions and shared checkpoint storage. Hybrid LoRA
-base-override gather/save remains pending on real multi-GPU hardware.
+Adapter-only LoRA, TrainableTokens and hybrid LoRA base-override gather/save
+are validated on two L4 nodes with real ZeRO-3 partitions and shared checkpoint
+storage. The hybrid case also merges and reloads the artifact offline.
 
 These APIs accept ordinary model and adapter paths. Optional artifact transfer
 is supplied by the caller and is independent of training.
@@ -259,8 +259,6 @@ uninterrupted baselines exactly. See [P0/P1 evidence](gpu-p0-p1-validation.md).
 Remaining distributed coverage:
 
 - two different local CUDA indices on one multi-GPU host
-- hybrid LoRA with full-trained base overrides under ZeRO-3
-- uneven batches/accumulation and multi-epoch distributed resume
 - larger representative models, tied/untied embeddings and alternative GC modes
 - distributed offload and additional optimizer/scheduler ownership combinations
 - node failure, restart and node-local checkpoint storage
@@ -278,7 +276,7 @@ identity is already materialized.
 
 ---
 
-## Phase 6 — Muon and richer optimizers — next major feature
+## Phase 6 — Muon and richer optimizers — deferred
 
 Muon support is not just accepting `type="Muon"`.
 
@@ -306,20 +304,15 @@ Generic AdamW must remain independent of Muon-specific tensor-shape rules.
 
 ---
 
-## Phase 7 — evaluation framework
+## Phase 7 — evaluation framework — initial implementation
 
-Planned:
+Implemented optional validation data, epoch/step schedules, global token-weighted
+NLL/perplexity and an additive custom-metric interface. Explicit masks exclude
+samples repeated only to balance evaluation ranks. Evaluation preserves training
+RNG/mode/optimizer/scheduler state and records its position in checkpoints.
 
-- optional validation dataset/dataloader
-- epoch and optional step-based evaluation
-- validation loss / perplexity where meaningful
-- pluggable metrics
-- `accelerator.gather_for_metrics` or equivalent distributed aggregation
-- no rank-local metric published under a global metric name
-- evaluation state separated from optimization state
-
-Application-specific classification/ranking/judge metrics remain plugins rather
-than core causal-LM assumptions.
+See [evaluation](evaluation.md) for definitions, extension points and limitations.
+Task-specific classification/ranking/judge metrics remain application plugins.
 
 ---
 
@@ -356,18 +349,40 @@ cases on main and passed five two-node GPU cases after fixing the runtime
 model-loading context. The 8-vCPU quota permitted two g6.xlarge nodes, each
 with one L4; initialization-time partitioning remains unsupported.
 
-## Priority from here
+## Current delivery and deferred work
 
-```text
-1. broaden distributed coverage beyond the validated two-node tiny-model cases
-2. Muon and richer optimizer policies
-3. evaluation framework
-4. ZeRO-3 init-time loading / profiling / advanced distributed features
-5. optional combined LoRA + trainable-token adapter support
-```
+The approved implementation order is:
 
-Multi-GPU validation should be run explicitly on dedicated hardware; normal
-push/PR CI remains CPU-only.
+1. Training hardening: correct partial accumulation windows; three-epoch uneven
+   dataset resume; rank/materialization/checkpoint/non-finite-loss failures;
+   hybrid LoRA and full-model ZeRO-3 artifact checks.
+2. Evaluation: scheduled global NLL/perplexity, additive metrics and no training
+   state/RNG changes.
+3. Portable workflow: real data-package collator, vocabulary expansion with
+   actual IDs, artifact manifests, separate train/merge/generation processes.
+
+Implementation and test evidence are tracked in [phase 1–3 validation](phase123-validation.md).
+A test being implemented does not by itself establish GPU support.
+
+The following **step 4 items are roadmap only**, with no implementation added in
+this delivery:
+
+- **Muon / richer optimizers:** explicit matrix/embedding/norm parameter policies,
+  ownership and checkpoint contracts before integrating a selected backend.
+- **Combined LoRA + TrainableTokens:** one native combined adaptation contract,
+  exact trainable ownership and adapter/resume/merge tests. Current combinations
+  continue to fail early.
+- **Performance / stability:** tokens/sec, step time, peak memory, longer runs,
+  representative architectures, offload/topology comparisons and profiling.
+- **ZeRO-3 initialization-time partitioning:** load large models without a full
+  replica per rank; revisit tied-weight discovery and pre-adaptation metadata.
+- **Advanced model/distribution features:** MTP and tensor parallelism after
+  checkpoint/evaluation/artifact semantics are stable.
+
+Remaining validation beyond the current fixtures also includes two different
+local CUDA indices on one host, node restart/recovery and node-local checkpoints,
+alternative gradient-checkpointing modes, and broader dependency versions.
+Multi-GPU jobs require explicitly provisioned hardware; push/PR CI stays CPU-only.
 
 ---
 

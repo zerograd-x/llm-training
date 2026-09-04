@@ -95,7 +95,7 @@ DeepSpeed scheduler config
 
 Common hyperparameters keep one source of truth. Learning rate, weight decay, Adam betas, and epsilon come from `OptimizerConfig`; warmup length and total training steps come from `SchedulerConfig` plus the trainer's computed training length. DeepSpeed-specific `params` may add backend-specific options but may not override those shared fields.
 
-For data-parallel runs the trainer computes scheduler length from the expected per-rank prepared DataLoader length rather than from the unsharded pre-prepare DataLoader length. With the current Accelerate default `split_batches=False`, the number of batches per rank is `ceil(unsharded_batches / world_size)`.
+For data-parallel runs with the current Accelerate default `split_batches=False`, each rank receives `ceil(unsharded_batches / world_size)` batches. The trainer first computes synchronized optimizer updates from that per-rank length and gradient accumulation, then expresses the scheduler horizon in the underlying scheduler-step units expected by Accelerate. `AcceleratedScheduler` advances a Torch/HF scheduler `world_size` times per synchronized optimizer update in this mode, so the horizon is `optimizer_updates * world_size`. This also handles uneven final batch groups correctly.
 
 DeepSpeed `WarmupLR` and `WarmupDecayLR` require at least one warmup step. The runtime rejects a resolved warmup of zero before entering DeepSpeed rather than silently changing the requested schedule.
 
@@ -210,7 +210,7 @@ Normal CI validates configuration translation, ownership rules, `DummyOptim` / `
 
 ### Two-process generic distributed integration
 
-A CPU integration test launches two real processes with `torch.distributed.run` and validates rank/global-local ownership, local-rank-0 materialization, all-rank model construction, DataLoader sharding, reuse of one `DistributedRuntime` inside `Trainer`, per-rank scheduler length, and the driver-only guard. This validates generic distributed lifecycle semantics without claiming ZeRO-3 parameter sharding.
+A CPU integration test launches two real processes with `torch.distributed.run` and validates rank/global-local ownership, local-rank-0 materialization, all-rank model construction, DataLoader sharding, reuse of one `DistributedRuntime` inside `Trainer`, distributed scheduler horizon, and the driver-only guard. This validates generic distributed lifecycle semantics without claiming ZeRO-3 parameter sharding.
 
 ### Real DeepSpeed CPU integration
 

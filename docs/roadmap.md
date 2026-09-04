@@ -331,6 +331,18 @@ Later work includes:
 
 ---
 
+## Single-GPU validation audit — 2026-09-04
+
+See [GPU test matrix](gpu-validation-matrix.md) for evidence and remaining gates.
+Existing L4 runs exercise LoRA BF16, single-rank ZeRO-3 and gradient checkpointing,
+but the original eight-case worker did not pass all cases. Independent cases
+must use fresh processes and propagate semantic assertion failures.
+
+Before expanding to multiple GPUs, complete advancing LoRA resume and numerical
+adapter/merge equivalence, resolve TrainableTokens CPU/NCCL initialization and
+effective-row checks, trace the scheduler warning, and verify clean CPUAdam
+build plus offload resume/export. Two-GPU ZeRO-3 is deferred until quota increases.
+
 ## Priority from here
 
 ```text

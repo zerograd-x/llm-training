@@ -99,11 +99,10 @@ This is important for TrainableTokens because the trainable rows live at the
 bottom of an otherwise frozen network; autograd still needs a path through the
 frozen transformer blocks.
 
-`use_reentrant` remains an explicit runtime setting. The CPU integration tests
-do not establish a universal choice for multi-rank ZeRO-3. The older reference
-implementation selected reentrant checkpointing for its ZeRO-3 environment;
-real multi-GPU validation is required before this runtime hard-codes such a
-backend-specific rule.
+`use_reentrant` remains an explicit runtime setting. Non-reentrant GC passes
+on the pinned two-node tiny-model stack in the [P0/P1 matrix](gpu-p0-p1-validation.md).
+Other model/backend combinations still need their own validation before a
+universal checkpointing mode can be selected.
 
 ## Adapter artifact
 
@@ -196,46 +195,26 @@ The CPU integration test verifies more than file existence:
 - logits from the merged plain HF model match the trained PEFT model within
   numerical tolerance.
 
-## Deliberate differences from the reference implementation
+## Adaptation and artifact contracts
 
-The user-provided reference is the design source for using PEFT TrainableTokens,
-appended-token selection, tied-weight handling, adapter-only worker saves, and
-offline merge. This runtime intentionally differs in several places:
-
-1. **TrainableTokens is not a FreezeConfig flag.** `FreezeConfig` in this repo
-   means which base-model parameters remain fully trainable. Partial-token
-   parameterization is a separate adaptation mechanism and therefore has its
-   own `TrainableTokensConfig`.
-2. **`LoRA + TrainableTokens` is rejected in v1.** The reference path could
-   construct LoRA and then replace that PEFT model with a standalone
-   TrainableTokens model, silently losing the LoRA adapter. Current PEFT has a
-   native combined mechanism (`LoraConfig.trainable_token_indices`), but that is
-   a separate feature and should be implemented and tested explicitly rather
-   than obtained accidentally by sequential wrapping.
-3. **`FreezeConfig + TrainableTokens` is rejected in v1.** Standalone
-   TrainableTokens has a simple invariant: only selected token deltas are
-   trainable. Combining arbitrary full-trained base parameters with it would
-   require a hybrid artifact contract analogous to hybrid LoRA and should not
-   be implicit.
-4. **No silent zero-token no-op.** If `TrainableTokensConfig` is present,
-   `n_tokens_added` must be greater than zero. A configuration typo fails before
-   training instead of changing the training regime.
-5. **Targets are fully qualified.** The reference helper returned embedding leaf
-   names. This runtime uses exact resolved names to avoid suffix matches against
-   unrelated embedding modules.
-6. **Tied detection currently uses actual weight identity.** This is correct for
-   the current lifecycle because the complete HF model is materialized before
-   PEFT/Accelerate/DeepSpeed and `zero3_init_flag=False`. The reference also had
-   a separate PEFT-style auto-tie detector based on model config metadata,
-   which becomes important if this runtime later supports ZeRO-3 init-time
-   partitioning where tensor identity may not yet be a reliable signal.
-7. **TrainableTokens serialization explicitly disables full embedding saves.**
-   The reference delegated directly to PEFT `save_pretrained`. This runtime
-   additionally guards against PEFT's vocabulary-resize auto-save behavior by
-   forcing `save_embedding_layers=False`.
-8. **Storage is not part of the training API.** The reference carried
-   `base_hdfs` / `ckp_hdfs`. This repo accepts ordinary model/adapter paths and
-   keeps HDFS, S3, or other publishing concerns outside the training core.
+1. **Partial-token training has its own configuration.** `FreezeConfig` controls
+   fully trained base parameters; `TrainableTokensConfig` selects a different
+   parameterization in which only the selected token deltas are trainable.
+2. **Combined adaptation is explicit.** Version 1 rejects both
+   `LoRA + TrainableTokens` and `FreezeConfig + TrainableTokens`. Future combined
+   modes require defined optimizer coverage, checkpoint and artifact contracts;
+   sequential adapter wrapping must not replace an existing adapter.
+3. **Invalid token counts fail early.** `n_tokens_added` must be greater than zero
+   when partial-token training is requested.
+4. **Targets are fully qualified.** Exact resolved module names prevent suffix
+   matches against unrelated embedding modules.
+5. **Tied weights are identified before partitioning.** The current runtime loads
+   full weights before adaptation and backend preparation. Initialization-time
+   sharding would require revisiting this discovery contract using model metadata.
+6. **Adapter serialization is compact.** `save_embedding_layers=False` prevents
+   vocabulary-resize handling from saving the complete embedding matrix.
+7. **Artifacts use ordinary paths.** Model and adapter APIs have no dependency on
+   a storage service, organization platform or deployment environment.
 
 ## Current validation boundary
 
@@ -262,3 +241,4 @@ ZeRO-3 init-time partitioning                ❌
 LoRA + TrainableTokens combined adapter      ❌
 FreezeConfig + TrainableTokens hybrid state  ❌
 ```
+

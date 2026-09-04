@@ -9,6 +9,7 @@ from accelerate import Accelerator
 from transformers import PreTrainedTokenizerBase
 
 from ..config import TrainingConfig
+from ..distributed import raise_if_any_rank_failed
 from .state import TrainerState
 
 _CHECKPOINT_RE = re.compile(r"^checkpoint-(\d+)$")
@@ -66,17 +67,52 @@ def save_training_checkpoint(
     """
 
     checkpoint_dir = Path(output_dir) / f"checkpoint-{state.global_step:08d}"
+    error = None
+    if accelerator.is_main_process:
+        try:
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            (checkpoint_dir / "checkpoint_started.json").write_text(
+                '{"format_version": 1}\n'
+            )
+            (checkpoint_dir / "checkpoint_manifest.json").unlink(missing_ok=True)
+            (checkpoint_dir / "artifact.json").unlink(missing_ok=True)
+        except Exception as exc:
+            error = exc
+    raise_if_any_rank_failed(error, "Checkpoint initialization")
+    accelerator.wait_for_everyone()
     accelerator.save_state(str(checkpoint_dir))
     accelerator.wait_for_everyone()
 
+    error = None
     if accelerator.is_main_process:
-        state.save(checkpoint_dir / "trainer_state.json")
-        (checkpoint_dir / "training_config.json").write_text(
-            json.dumps(config.to_dict(), indent=2, sort_keys=True) + "\n"
-        )
-        if tokenizer is not None:
-            tokenizer.save_pretrained(checkpoint_dir / "tokenizer")
-        _prune_checkpoints(Path(output_dir), config.checkpoint.keep_last)
+        try:
+            state.save(checkpoint_dir / "trainer_state.json")
+            (checkpoint_dir / "training_config.json").write_text(
+                json.dumps(config.to_dict(), indent=2, sort_keys=True) + "\n"
+            )
+            if tokenizer is not None:
+                tokenizer.save_pretrained(checkpoint_dir / "tokenizer")
+            manifest = {
+                str(p.relative_to(checkpoint_dir)): p.stat().st_size
+                for p in checkpoint_dir.rglob("*")
+                if p.is_file()
+                and p.name
+                not in (
+                    "checkpoint_manifest.json",
+                    "checkpoint_manifest.tmp",
+                    "artifact.json",
+                    "artifact.tmp",
+                )
+            }
+            temporary = checkpoint_dir / "checkpoint_manifest.tmp"
+            temporary.write_text(
+                json.dumps({"format_version": 1, "files": manifest}) + "\n"
+            )
+            temporary.replace(checkpoint_dir / "checkpoint_manifest.json")
+            _prune_checkpoints(Path(output_dir), config.checkpoint.keep_last)
+        except Exception as exc:
+            error = exc
+    raise_if_any_rank_failed(error, "Checkpoint metadata save")
 
     accelerator.wait_for_everyone()
     return checkpoint_dir
@@ -88,12 +124,31 @@ def load_training_checkpoint(
 ) -> TrainerState:
     checkpoint_dir = Path(checkpoint_dir)
     state_path = checkpoint_dir / "trainer_state.json"
-    if not state_path.is_file():
-        raise FileNotFoundError(f"Missing trainer state: {state_path}")
+    error = None
+    try:
+        if not state_path.is_file():
+            raise FileNotFoundError(f"Missing trainer state: {state_path}")
+        manifest_path = checkpoint_dir / "checkpoint_manifest.json"
+        if (
+            checkpoint_dir / "checkpoint_started.json"
+        ).exists() and not manifest_path.is_file():
+            raise FileNotFoundError(f"Incomplete checkpoint: missing {manifest_path}")
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text())
+            for name, size in manifest["files"].items():
+                path = checkpoint_dir / name
+                if not path.is_file() or path.stat().st_size != size:
+                    raise FileNotFoundError(
+                        f"Missing or incomplete checkpoint file: {path}"
+                    )
+        state = TrainerState.load(state_path)
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error, "Checkpoint validation")
 
     accelerator.load_state(str(checkpoint_dir))
     accelerator.wait_for_everyone()
-    return TrainerState.load(state_path)
+    return state
 
 
 def _prune_checkpoints(output_dir: Path, keep_last: int | None) -> None:

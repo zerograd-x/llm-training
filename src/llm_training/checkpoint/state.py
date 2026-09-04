@@ -12,6 +12,8 @@ class TrainerState:
     global_step: int = 0
     epoch: int = 0
     batch_in_epoch: int = 0
+    last_eval_step: int = -1
+    last_eval_epoch: int = -1
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
@@ -24,4 +26,6 @@ class TrainerState:
             global_step=int(data["global_step"]),
             epoch=int(data["epoch"]),
             batch_in_epoch=int(data["batch_in_epoch"]),
+            last_eval_step=int(data.get("last_eval_step", -1)),
+            last_eval_epoch=int(data.get("last_eval_epoch", -1)),
         )

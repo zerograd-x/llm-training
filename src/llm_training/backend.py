@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from typing import Any
 
 from accelerate import Accelerator, DeepSpeedPlugin
+import torch
 from torch import nn
 
 from .config import GradientCheckpointingConfig, TrainingConfig
@@ -128,6 +130,33 @@ def build_deepspeed_config(config: TrainingConfig) -> dict[str, Any]:
     return result
 
 
+def _environment_world_size() -> int:
+    raw = os.environ.get("WORLD_SIZE", "1")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 1
+
+
+def _force_multi_cpu_runtime(config: TrainingConfig) -> bool:
+    """Tell Accelerate to initialize MULTI_CPU when torchrun has no GPU.
+
+    Accelerate only recognizes a WORLD_SIZE>1 CPU launch when ``cpu=True`` is
+    passed to ``Accelerator``. Without this, two torchrun CPU workers can each
+    silently become independent single-process runtimes, which breaks rank
+    ownership, barriers, DataLoader sharding, and scheduler accounting.
+
+    DeepSpeed keeps its existing accelerator-selection path because CPU
+    DeepSpeed uses its own accelerator/backend configuration.
+    """
+
+    return (
+        config.deepspeed is None
+        and _environment_world_size() > 1
+        and not torch.cuda.is_available()
+    )
+
+
 def build_accelerator(config: TrainingConfig) -> Accelerator:
     """Build the Accelerate runtime for the configured training backend."""
 
@@ -141,12 +170,14 @@ def build_accelerator(config: TrainingConfig) -> Accelerator:
 
         deepspeed_plugin = DeepSpeedPlugin(
             hf_ds_config=build_deepspeed_config(config),
-            # The model is currently constructed before Trainer/Accelerator, so
-            # ZeRO-3 init-time partitioning is intentionally not claimed here.
+            # The runtime now exists before model loading, but true ZeRO-3
+            # init-time partitioning still requires a dedicated model-loading
+            # context and remains intentionally disabled.
             zero3_init_flag=False,
         )
 
     return Accelerator(
+        cpu=_force_multi_cpu_runtime(config),
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         mixed_precision=config.mixed_precision,
         deepspeed_plugin=deepspeed_plugin,

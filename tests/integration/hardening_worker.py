@@ -135,15 +135,13 @@ def train(case, phase, root):
     runtime = DistributedRuntime(cfg)
     assert runtime.num_processes == 2 and runtime.process_index == rank
     if case == "failure_rank":
-        torch.distributed.barrier()
+        control_group = torch.distributed.new_group(backend="gloo")
         if rank == 1:
-            write(
-                root / f"{phase}-rank-{rank}.json",
-                dict(ok=True, expected_failure=True, error="intentional rank exit 23"),
-            )
-            os._exit(23)
-        torch.distributed.all_reduce(torch.ones(1, device=runtime.accelerator.device))
-        raise AssertionError("Peer failure was not propagated")
+            raise RuntimeError("intentional rank failure")
+        torch.distributed.monitored_barrier(
+            group=control_group, timeout=timedelta(seconds=10), wait_all_ranks=True
+        )
+        raise AssertionError("Control-plane failure was not propagated")
     if case == "failure_materialize":
 
         def bad(path):
@@ -156,10 +154,12 @@ def train(case, phase, root):
     seen = []
 
     def track(module, args, kwargs):
-        if module.training:
+        # Hook the prepared outer model. DeepSpeedEngine's own training flag can
+        # stay true while its wrapped model is in eval mode, so grad mode is the
+        # reliable distinction for this test's train vs. evaluation forwards.
+        if torch.is_grad_enabled():
             seen.extend(kwargs["input_ids"][:, 1].detach().cpu().tolist())
 
-    model.register_forward_pre_hook(track, with_kwargs=True)
     trainer = Probe(
         model=model,
         train_dataset=Rows(),
@@ -169,6 +169,9 @@ def train(case, phase, root):
         runtime=runtime,
     )
     trainer.root = root
+    # PEFT may call the base model's forward method directly, bypassing hooks
+    # registered on the original model. Observe the prepared outer model.
+    trainer.model.register_forward_pre_hook(track, with_kwargs=True)
     if case == "failure_checkpoint":
         from llm_training.checkpoint import load_training_checkpoint
 
@@ -268,9 +271,10 @@ def train(case, phase, root):
 
 def verify(case, root):
     if case.startswith("failure_"):
+        ranks = (1,) if case == "failure_rank" else range(2)
         records = [
             json.loads((root / f"baseline-rank-{rank}.json").read_text())
-            for rank in range(2)
+            for rank in ranks
         ]
         assert all(r["expected_failure"] and r["ok"] for r in records)
         return dict(failure_propagated=True)
@@ -393,15 +397,9 @@ def main():
                 "failure_checkpoint": "checkpoint file",
                 "failure_masked": "Non-finite loss",
             }
-            peer_error = case == "failure_rank" and any(
-                s in str(exc).lower()
-                for s in (
-                    "connection closed",
-                    "connection reset",
-                    "remote process",
-                    "nccl",
-                    "peer",
-                )
+            peer_error = case == "failure_rank" and (
+                (rank == 1 and "intentional rank failure" in str(exc))
+                or (rank == 0 and "monitoredbarrier" in str(exc).lower())
             )
             if peer_error or needles.get(case, "__not_expected__") in str(exc):
                 result.update(ok=True, expected_failure=True)

@@ -4,7 +4,7 @@ This roadmap tracks reusable capabilities in `llm-training`. Application-specifi
 data systems, orchestration frameworks, serving engines, retrieval logic, and
 storage transports stay outside this repository.
 
-The [portable workflow design](train_causal_lm_workflow.md) defines a plain
+The [portable workflow](train_causal_lm_workflow.md) defines a plain
 Python/local-filesystem path through data preparation, optional vocabulary
 expansion, training, export and optional inference/evaluation. No organization
 platform, remote scheduler or storage service is required by that design.
@@ -17,7 +17,7 @@ Phase 1  PEFT adaptation foundation             ✅
 Phase 2  LoRA                                   ✅
 Phase 3  TrainableTokens                        ✅ CPU / single + two-node GPU
 Phase 4  adapter + offline merge lifecycle      ✅ CPU / single + two-node GPU
-Phase 5  PEFT + distributed hardening           🟡 boundary/failure suite implemented; validation tracked below
+Phase 5  PEFT + distributed hardening           🟡 uneven/hybrid/full/failure GPU suite passed; broader models remain
 Phase 6  Muon / richer optimizers               ❌
 Phase 7  evaluation framework                   ✅ first implementation
 Phase 8  advanced distributed / observability   ❌
@@ -227,9 +227,9 @@ configured ZeRO-3 they enter `deepspeed.zero.GatheredParameters` only around
 adapter parameters and, for hybrid LoRA, the additional full-trained base
 overrides.
 
-Adapter-only LoRA and TrainableTokens gather/save are validated on two L4
-nodes with real ZeRO-3 partitions and shared checkpoint storage. Hybrid LoRA
-base-override gather/save remains pending on real multi-GPU hardware.
+Adapter-only LoRA, TrainableTokens and hybrid LoRA base-override gather/save
+are validated on two L4 nodes with real ZeRO-3 partitions and shared checkpoint
+storage. The hybrid case also merges and reloads the artifact offline.
 
 These APIs accept ordinary model and adapter paths. Optional artifact transfer
 is supplied by the caller and is independent of training.
@@ -259,8 +259,6 @@ uninterrupted baselines exactly. See [P0/P1 evidence](gpu-p0-p1-validation.md).
 Remaining distributed coverage:
 
 - two different local CUDA indices on one multi-GPU host
-- hybrid LoRA with full-trained base overrides under ZeRO-3
-- uneven batches/accumulation and multi-epoch distributed resume
 - larger representative models, tied/untied embeddings and alternative GC modes
 - distributed offload and additional optimizer/scheduler ownership combinations
 - node failure, restart and node-local checkpoint storage

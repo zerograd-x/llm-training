@@ -146,15 +146,16 @@ def main():
                     else {}
                 )
                 negative = case.startswith("failure_")
-                expected_exit = (
-                    code not in (0, 124) and payload.get("expected_failure") is True
-                    if negative
-                    else code == 0
-                )
+                expected_exit = code == 0
+                if negative:
+                    expected_exit = (
+                        code not in (0, 124) and payload.get("expected_failure") is True
+                    )
+                payload_ok = payload.get("ok") is True
                 atomic(
                     folder / f"{phase}-exit-node-{node}.json",
                     {
-                        "ok": expected_exit and payload.get("ok") is True,
+                        "ok": expected_exit and payload_ok,
                         "returncode": code,
                     },
                 )

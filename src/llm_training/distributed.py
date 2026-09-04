@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 import os
 from pathlib import Path
 from typing import Any, Literal
@@ -108,13 +108,22 @@ class DistributedRuntime:
         return bool(self.accelerator.is_local_main_process)
 
     def wait_for_everyone(self) -> None:
-        self.accelerator.wait_for_everyone()
+        if self.num_processes > 1:
+            self.accelerator.wait_for_everyone()
 
     def main_process_first(self) -> AbstractContextManager[None]:
-        return self.accelerator.main_process_first()
+        return (
+            self.accelerator.main_process_first()
+            if self.num_processes > 1
+            else nullcontext()
+        )
 
     def local_main_process_first(self) -> AbstractContextManager[None]:
-        return self.accelerator.local_main_process_first()
+        return (
+            self.accelerator.local_main_process_first()
+            if self.num_processes > 1
+            else nullcontext()
+        )
 
     def ensure_config(self, config: TrainingConfig) -> None:
         if config != self.config:

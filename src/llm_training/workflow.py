@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import signal
+import socket
 import sys
 
 from . import config as configuration
@@ -88,16 +89,24 @@ def _stage(name, request, directory, timeout):
         "ACCELERATE_USE_DEEPSPEED",
     ):
         env.pop(key, None)
+    command = [sys.executable]
+    if name == "train" and request["config"].get("deepspeed") is not None:
+        # Establish the single-rank process group through PyTorch's launcher;
+        # a plain Python DeepSpeed launch would otherwise depend on MPI discovery.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        command += [
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node=1",
+            "--master_addr=127.0.0.1",
+            f"--master_port={port}",
+        ]
+    command += ["-m", "llm_training.workflow_worker", name, str(path), str(result_path)]
     with (directory / f"{name}.log").open("w") as log:
         result = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "llm_training.workflow_worker",
-                name,
-                str(path),
-                str(result_path),
-            ],
+            command,
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,

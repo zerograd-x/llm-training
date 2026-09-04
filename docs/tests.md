@@ -23,6 +23,7 @@ New focused suites:
 | `test_checkpoint.py` | Model/optimizer/scheduler/RNG restore; missing, truncated and unfinished checkpoints rejected before load |
 | `test_vocabulary_manifest.py` | Actual appended IDs, duplicate tokens, mean/random initialization, tied/untied old-row preservation, wrong-base/tamper rejection |
 | `test_portable_workflow.py` | Full/LoRA/TrainableTokens raw-example workflow, actual collator, distinct training/merge/inference processes, explicit split validation |
+| `integration/test_distributed_evaluation.py` | Globally reduced custom accuracy; mismatched statistic widths and rank-local callback exceptions propagate without hanging |
 | `integration/test_hardening.py` | Two-rank Gloo boundaries, fresh-process resume, global evaluation and asymmetric failures |
 
 The distributed hardening test uses Linux. The pinned Accelerate/PyTorch pair

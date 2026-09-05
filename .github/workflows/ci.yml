@@ -45,6 +45,32 @@ jobs:
           tests/integration/test_lora_training.py
           tests/integration/test_trainable_tokens_training.py
 
+  portable-workflow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ACCELERATE_USE_CPU: "true"
+      OMP_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: zerograd-x/llm-training-data
+          ref: 7589e4f6ae716451292f1714b09de7082a20103c
+          path: .ci/llm-training-data
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev,peft]" -e .ci/llm-training-data
+      - name: Require optional workflow dependencies
+        run: python -c "import llm_training_data, peft"
+      - name: Test real data bridge and full/LoRA/TrainableTokens workflow
+        run: >-
+          pytest tests/test_portable_workflow.py
+          tests/integration/test_training_data_bridge.py
+
   deepspeed-cpu-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15

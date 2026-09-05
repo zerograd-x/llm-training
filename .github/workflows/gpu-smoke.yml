@@ -6,13 +6,35 @@ on:
 jobs:
   bf16-smoke:
     runs-on: [self-hosted, linux, gpu]
+    timeout-minutes: 20
+    env:
+      DS_BUILD_OPS: "0"
+      GPU_SMOKE_OUTPUT: ${{ runner.temp }}/llm-training-gpu-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
-      - run: pip install -e ".[dev]"
+      - run: pip install -e ".[dev,peft,deepspeed]"
       - run: nvidia-smi
-      - run: python -c "import torch; print('cuda_available=', torch.cuda.is_available()); print('device=', torch.cuda.get_device_name(0) if torch.cuda.is_available() else None); print('bf16_supported=', torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False)"
-      - run: pytest -m gpu tests/gpu
+      - name: Require CUDA and BF16
+        run: |
+          python - <<'PY'
+          import torch
+          assert torch.cuda.is_available(), "GPU smoke requires CUDA"
+          assert torch.cuda.is_bf16_supported(), "GPU smoke requires BF16"
+          print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))
+          PY
+      - name: Run LoRA BF16 lifecycle in fresh processes
+        run: python tests/gpu/gpu_validation.py "$GPU_SMOKE_OUTPUT" --cases lora_bf16
+      - name: Retain results and phase logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.GPU_SMOKE_OUTPUT }}/matrix.json
+            ${{ env.GPU_SMOKE_OUTPUT }}/lora_bf16/*.json
+            ${{ env.GPU_SMOKE_OUTPUT }}/lora_bf16/*.log
+          if-no-files-found: warn

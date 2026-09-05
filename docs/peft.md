@@ -129,7 +129,10 @@ config = TrainingConfig(
 )
 ```
 
-The `use_reentrant` choice remains explicit. Multi-GPU ZeRO-3 gradient-checkpointing behavior is not claimed as validated by the CPU tests.
+The `use_reentrant` choice remains explicit. Non-reentrant LoRA + ZeRO-3
+gradient checkpointing passed the 2026-09-04 two-node L4 tiny-GPT-2 run.
+Other modes, models and dependency combinations need their own validation; see
+the [GPU validation matrix](gpu-validation.md).
 
 ## Optimizer ownership
 
@@ -157,7 +160,9 @@ CPU integration covers:
 - continued training after resume
 - adapter save and offline merge after the DeepSpeed worker exits
 
-These tests do **not** validate multi-rank ZeRO-3 parameter partitioning or NCCL behavior.
+The separate [two-node GPU runs](gpu-validation.md) validate NCCL, actual
+ZeRO-3 parameter partitioning, fresh-process resume and pure/hybrid LoRA
+export/merge/reload on the recorded fixtures.
 
 ## Deployment artifact lifecycle
 
@@ -210,7 +215,11 @@ LoRA parameters
 fully trained base overrides, if hybrid
 ```
 
-before serialization. This is designed to avoid a whole-model ZeRO-3 gather. Real multi-rank ZeRO-3 adapter serialization remains a Phase-5 validation item; current real DeepSpeed CPU integration is ZeRO-2, world size 1.
+before serialization. Two-node L4 validation confirms adapter-only gathering
+and global-rank-0 serialization under real ZeRO-3 partitions, followed by
+offline merge and reload. The pure LoRA evidence includes non-reentrant gradient
+checkpointing; the later hardening run also covers hybrid base overrides. See
+the [GPU validation matrix](gpu-validation.md) for tested sources and limits.
 
 ### Offline merge
 
@@ -263,3 +272,4 @@ If the adapter artifact contains tokenizer files, `merge_lora()` copies their ef
 Integration tests compare logits from the trained PEFT model against logits from the offline merged plain HF model, rather than checking only that files were created. Both pure and hybrid paths are also exercised after a real DeepSpeed CPU checkpoint and fresh-process resume.
 
 `Trainer.export_model()` remains reserved for ordinary full fine-tuning. With LoRA enabled it directs callers to `save_adapter()` followed by offline `merge_lora(...)` instead of guessing which artifact type the caller intended.
+

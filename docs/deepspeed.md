@@ -241,20 +241,16 @@ A separate CPU CI job installs the real DeepSpeed package and starts an actual D
 
 This test currently exercises ZeRO stage 2 with world size 1. It verifies real DeepSpeed/Accelerate API integration and checkpoint lifecycle on CPU, but it does **not** prove cross-rank parameter partitioning.
 
-### GPU validation still required
+### GPU validation
 
-The following remain separate validation levels:
+The [2026-09-04 GPU matrix](gpu-validation.md) records single-L4 BF16,
+ZeRO-3 and clean CPUAdam offload lifecycles, plus two-node NCCL runs with one
+L4 per host. The two-node runs verify actual parameter partitioning,
+LoRA/TrainableTokens adapter gathering, distributed checkpoint/resume,
+full-model export and offline merge/reload. Non-reentrant gradient
+checkpointing passed for LoRA and TrainableTokens on tiny GPT-2 fixtures.
 
-```text
-1 GPU DeepSpeed smoke
-    -> CUDA + bf16 + DeepSpeed runtime behavior
-
-2+ GPU ZeRO-3 integration
-    -> real cross-rank parameter partitioning
-    -> all-gather / reduce-scatter communication
-    -> distributed checkpoint/resume
-    -> adapter gather/save under partitioning
-    -> consolidated Hugging Face export
-```
-
-A single CPU rank or single GPU rank can enter ZeRO code paths, but cannot validate the defining multi-rank partitioning behavior of ZeRO-3. Multi-GPU validation therefore remains a release/milestone test rather than a claim implied by the CPU integration suite.
+These results apply to the recorded sources and dependency stack. Same-host
+GPUs with distinct local indices, distributed CPU offload, broader models and
+long-run performance still require validation. Initialization-time ZeRO-3
+partitioning requires implementation before testing.

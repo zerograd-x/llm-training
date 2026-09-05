@@ -146,9 +146,10 @@ serializes only the TrainableTokens adapter state.
 
 Under configured ZeRO-3, adapter saving enters
 `deepspeed.zero.GatheredParameters` only for the trainable token-delta
-parameters. It does not request a consolidated full-model state dict. This code
-path is designed for ZeRO-3, but real multi-rank ZeRO-3 TrainableTokens saving
-is not yet claimed as validated.
+parameters. It does not request a consolidated full-model state dict. The
+2026-09-04 two-node L4 run verified this gather scope, actual token-delta
+partitioning and global-rank-0 serialization, followed by offline merge/reload.
+See the [GPU validation matrix](gpu-validation.md) for source and fixture scope.
 
 ## Offline merge
 
@@ -225,6 +226,9 @@ PEFT TrainableTokens CPU training            ✅
 appended-row selection                       ✅
 tied GPT-2 embedding / LM-head path          ✅
 gradient checkpointing CPU path              ✅
+single-L4 BF16 / ZeRO-3 lifecycle            ✅
+two-node NCCL + ZeRO-3 lifecycle             ✅
+non-reentrant GC + two-node ZeRO-3           ✅
 optimizer ownership after PEFT wrapping      ✅
 compact adapter serialization                ✅
 offline merge into expanded base             ✅
@@ -232,11 +236,17 @@ old rows unchanged / new rows updated        ✅
 merged logits ~= trained PEFT logits          ✅
 ```
 
+GPU results use the pinned tiny-GPT-2 stack, two hosts with one L4 each, and
+shared checkpoint storage. The P1 rerun verifies resume, compact adapter save,
+merge/reload and unchanged old rows with and without non-reentrant checkpointing.
+The [matrix](gpu-validation.md) records historical source provenance separately
+from the maintained regression driver.
+
 Not established by these tests:
 
 ```text
-multi-rank ZeRO-3                            ❌
-NCCL                                         ❌
+same-host GPUs with distinct local indices   ❌
+other architectures / GC modes / long runs   ❌
 ZeRO-3 init-time partitioning                ❌
 LoRA + TrainableTokens combined adapter      ❌
 FreezeConfig + TrainableTokens hybrid state  ❌

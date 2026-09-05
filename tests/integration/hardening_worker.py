@@ -8,8 +8,10 @@ import json
 import os
 from pathlib import Path
 import random
+import socket
 import sys
 import traceback
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -21,12 +23,16 @@ from llm_training import (
     DistributedRuntime,
     EvaluationConfig,
     FreezeConfig,
+    GradientCheckpointingConfig,
     LoRAConfig,
     OptimizerConfig,
     SchedulerConfig,
     Trainer,
+    TrainableTokensConfig,
     TrainingConfig,
     merge_lora,
+    merge_trainable_tokens,
+    require_single_process,
 )
 from llm_training.loss import shift_causal_labels
 
@@ -60,6 +66,66 @@ def snapshot(trainer):
         }
 
 
+def effective_token_rows(trainer):
+    """Observe PEFT's effective embeddings, including its selected-row delta."""
+    model = trainer.accelerator.unwrap_model(trainer.model)
+    embedding = model.get_input_embeddings()
+    context = nullcontext()
+    if trainer.config.deepspeed:
+        import deepspeed
+
+        context = deepspeed.zero.GatheredParameters(
+            list(embedding.parameters()), modifier_rank=None
+        )
+    with context, torch.no_grad():
+        ids = torch.arange(model.config.vocab_size, device=trainer.accelerator.device)
+        return embedding(ids).detach().cpu().clone()
+
+
+def assert_token_rows(before, after):
+    assert before.shape == after.shape and before.dtype == after.dtype
+    assert torch.equal(before[:-2], after[:-2]), "Unselected token rows changed"
+    changed = (before[-2:] != after[-2:]).any(dim=1)
+    assert bool(changed.all()), "Both selected token rows must receive updates"
+    return dict(
+        stable_old_rows=True,
+        changed_selected_rows=int(changed.sum()),
+        selected_token_ids=[32, 33],
+        dtype=str(before.dtype),
+    )
+
+
+def save_adapter_probe(trainer):
+    """All ranks gather only trainable weights; only rank zero writes PEFT files."""
+    import llm_training.artifacts as artifacts
+
+    model = trainer.accelerator.unwrap_model(trainer.model)
+    original_gather = artifacts._zero3_gather_context
+    evidence = {}
+
+    def gather(parameters, config):
+        assert parameters and all(p.requires_grad for p in parameters)
+        evidence["gathered_parameters"] = len(parameters)
+        return original_gather(parameters, config)
+
+    with patch.object(artifacts, "_zero3_gather_context", gather), patch.object(
+        model, "save_pretrained", wraps=model.save_pretrained
+    ) as save_call:
+        path = trainer.save_adapter()
+        assert save_call.call_count == int(trainer.runtime.is_main_process)
+        evidence["save_pretrained_calls"] = save_call.call_count
+    if trainer.runtime.is_main_process:
+        from safetensors.torch import load_file
+
+        state = load_file(str(path / "adapter_model.safetensors"))
+        marker = "lora_" if trainer.config.lora else "trainable_tokens_delta"
+        assert state and all(marker in name for name in state)
+        assert not (path / "model.safetensors").exists()
+        if trainer.config.freeze is None:
+            assert not (path / "base_trainable_state.safetensors").exists()
+    return evidence
+
+
 def rng():
     return {
         "torch": torch.get_rng_state(),
@@ -84,13 +150,18 @@ def write(path, value):
 
 
 class Rows(torch.utils.data.Dataset):
+    def __init__(self, tokens=False):
+        self.tokens = tokens
+
     def __len__(self):
         return 9
 
     def __getitem__(self, index):
         if not 0 <= index < len(self):
             raise IndexError(index)
-        ids = torch.tensor([1, index + 3, index + 15, 2])
+        ids = torch.tensor(
+            [1, index + 3, 32 + index % 2 if self.tokens else index + 15, 2]
+        )
         labels = ids.clone()
         labels[: 1 + index % 2] = -100
         return dict(input_ids=ids, attention_mask=torch.ones_like(ids), labels=labels)
@@ -110,11 +181,12 @@ class Probe(Trainer):
             rank = self.runtime.process_index
             save(self.root / f"checkpoint-rng-{rank}.pt", rng())
             save(self.root / f"checkpoint-params-{rank}.pt", snapshot(self))
+            save(self.root / f"checkpoint-scheduler-{rank}.pt", self.scheduler.state_dict())
             raise Stop()
         return path
 
 
-def prepare(root):
+def prepare(case, root):
     torch.manual_seed(123)
     model = GPT2LMHeadModel(
         GPT2Config(
@@ -130,6 +202,8 @@ def prepare(root):
             embd_pdrop=0.2,
         )
     )
+    if case.startswith("tt_"):
+        model.resize_token_embeddings(34)
     model.save_pretrained(root / "base")
     return dict(prepared=True)
 
@@ -143,6 +217,7 @@ def train(case, phase, root):
         "nccl" if cuda else "gloo", timeout=timedelta(seconds=30)
     )
     ds = "zero3" in case
+    tokens = case.startswith("tt_")
     cfg = TrainingConfig(
         output_dir=str(
             root / ("baseline-run" if phase == "baseline" else "resumed-run")
@@ -159,8 +234,12 @@ def train(case, phase, root):
         deepspeed=DeepSpeedConfig(zero_stage=3) if ds else None,
         lora=(
             LoRAConfig(target_modules=("c_attn",), rank=4, alpha=8)
-            if case == "hybrid_zero3"
+            if case == "hybrid_zero3" or case.startswith("lora_")
             else None
+        ),
+        trainable_tokens=TrainableTokensConfig(n_tokens_added=2) if tokens else None,
+        gradient_checkpointing=GradientCheckpointingConfig(
+            enabled=case.endswith("_gc"), use_reentrant=False
         ),
         freeze=(
             FreezeConfig(
@@ -180,6 +259,28 @@ def train(case, phase, root):
     )
     runtime = DistributedRuntime(cfg)
     assert runtime.num_processes == 2 and runtime.process_index == rank
+    assert runtime.local_process_index == int(os.environ["LOCAL_RANK"])
+    assert runtime.is_main_process == (rank == 0)
+    assert runtime.is_local_main_process == (runtime.local_process_index == 0)
+    identity = dict(
+        rank=rank,
+        local_rank=runtime.local_process_index,
+        host=socket.gethostname(),
+        device=str(runtime.accelerator.device),
+    )
+    identities = [None, None]
+    torch.distributed.all_gather_object(identities, identity)
+    if os.environ.get("HARDENING_GPU") == "1":
+        assert torch.distributed.get_backend() == "nccl"
+        assert runtime.accelerator.device.type == "cuda"
+        assert torch.cuda.current_device() == runtime.local_process_index
+        assert len({item["host"] for item in identities}) == 2
+    try:
+        require_single_process("offline merge")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Distributed offline merge guard did not reject")
     if case == "failure_rank":
         control_group = torch.distributed.new_group(backend="gloo")
         if rank == 1:
@@ -206,14 +307,29 @@ def train(case, phase, root):
         if torch.is_grad_enabled():
             seen.extend(kwargs["input_ids"][:, 1].detach().cpu().tolist())
 
-    trainer = Probe(
-        model=model,
-        train_dataset=Rows(),
-        eval_dataset=Rows(),
-        collate_fn=collate,
-        config=cfg,
-        runtime=runtime,
-    )
+    import llm_training.trainer as trainer_module
+
+    original_builder = trainer_module.build_training_optimizer
+    coverage = {}
+
+    def build_optimizer(adapted_model, config):
+        optimizer = original_builder(adapted_model, config)
+        expected = {id(p) for p in adapted_model.parameters() if p.requires_grad}
+        actual = [id(p) for group in optimizer.param_groups for p in group["params"]]
+        assert expected == set(actual) and len(actual) == len(set(actual))
+        coverage.update(expected=len(expected), actual=len(actual), duplicates=0)
+        return optimizer
+
+    with patch.object(trainer_module, "build_training_optimizer", build_optimizer):
+        trainer = Probe(
+            model=model,
+            train_dataset=Rows(tokens),
+            eval_dataset=Rows(tokens),
+            collate_fn=collate,
+            config=cfg,
+            runtime=runtime,
+        )
+    assert coverage and trainer.runtime is runtime
     trainer.root = root
     # PEFT may call the base model's forward method directly, bypassing hooks
     # registered on the original model. Observe the prepared outer model.
@@ -239,16 +355,27 @@ def train(case, phase, root):
         trainer.loss_fn.forward = masked
     unwrapped = runtime.accelerator.unwrap_model(trainer.model)
     trainable = {name for name, p in unwrapped.named_parameters() if p.requires_grad}
+    assert trainable
     if cfg.lora:
-        assert any("lora_" in name for name in trainable) and any(
-            "ln_f" in name for name in trainable
-        )
+        assert any("lora_" in name for name in trainable)
+        if case == "hybrid_zero3":
+            assert any("ln_f" in name for name in trainable)
+        else:
+            assert all("lora_" in name for name in trainable)
+    if tokens:
+        assert all("trainable_tokens_delta" in name for name in trainable)
+    shards = []
     if ds:
-        assert any(
-            p.ds_tensor.numel() < p.ds_numel
-            for p in unwrapped.parameters()
+        assert trainer.model.zero_optimization_stage() == 3
+        assert trainer.model.bfloat16_enabled() == cuda
+        shards = [
+            dict(name=name, full=int(p.ds_numel), partition=int(p.ds_tensor.numel()))
+            for name, p in unwrapped.named_parameters()
             if hasattr(p, "ds_tensor")
-        )
+        ]
+        assert shards and any(p["partition"] < p["full"] for p in shards)
+    if cfg.gradient_checkpointing.enabled:
+        assert unwrapped.is_gradient_checkpointing and unwrapped.config.use_cache is False
     stop_step = 2 if case in ("boundary_epoch_ddp", "full_zero3") else 3
     if phase == "resume":
         assert trainer.state.global_step == stop_step
@@ -259,7 +386,9 @@ def train(case, phase, root):
         saved = load(root / f"checkpoint-params-{rank}.pt")
         for name in before:
             torch.testing.assert_close(before[name], saved[name], atol=0, rtol=0)
+        assert trainer.scheduler.state_dict() == load(root / f"checkpoint-scheduler-{rank}.pt")
     before = snapshot(trainer)
+    token_before = effective_token_rows(trainer) if tokens else None
     if phase == "interrupt":
         trainer.stop_step = stop_step
     try:
@@ -273,10 +402,11 @@ def train(case, phase, root):
     for name in set(before) - trainable:
         torch.testing.assert_close(before[name], after[name], atol=0, rtol=0)
     if cfg.lora:
-        for marker in ["lora_", "ln_f"]:
+        for marker in (["lora_", "ln_f"] if case == "hybrid_zero3" else ["lora_"]):
             assert any(
                 not torch.equal(before[n], after[n]) for n in trainable if marker in n
             )
+    token_rows = assert_token_rows(token_before, effective_token_rows(trainer)) if tokens else {}
     digest = hashlib.sha256(
         b"".join(
             p.contiguous().view(torch.uint8).numpy().tobytes() for p in after.values()
@@ -285,6 +415,7 @@ def train(case, phase, root):
     digests = [None, None]
     torch.distributed.all_gather_object(digests, digest)
     assert digests[0] == digests[1]
+    artifact_probe = {}
     if phase != "interrupt":
         assert (
             trainer.state.global_step == 6
@@ -295,12 +426,13 @@ def train(case, phase, root):
         assert all(group["lr"] == 0 for group in trainer.optimizer.param_groups)
         save(root / f"{phase}-params-{rank}.pt", after)
         trainer.model.eval()
-        fixed = torch.tensor([[1, 3, 15, 2]], device=runtime.accelerator.device)
+        fixed = torch.tensor([[1, 3, 32 if tokens else 15, 2]], device=runtime.accelerator.device)
         with torch.no_grad(), runtime.accelerator.autocast():
             logits = trainer.model(input_ids=fixed).logits.float().cpu()
         save(root / f"{phase}-logits-{rank}.pt", logits)
-        if cfg.lora:
-            trainer.save_adapter()
+        assert torch.isfinite(logits).all()
+        if cfg.lora or tokens:
+            artifact_probe = save_adapter_probe(trainer)
         else:
             trainer.export_model()
     return dict(
@@ -312,6 +444,12 @@ def train(case, phase, root):
         rank=rank,
         local_rank=runtime.local_process_index,
         backend=str(torch.distributed.get_backend()),
+        identities=identities,
+        optimizer_coverage=coverage,
+        shards=shards,
+        gradient_checkpointing=cfg.gradient_checkpointing.enabled,
+        token_rows=token_rows,
+        artifact_probe=artifact_probe,
     )
 
 
@@ -324,6 +462,28 @@ def verify(case, root):
         ]
         assert all(r["expected_failure"] and r["ok"] for r in records)
         return dict(failure_propagated=True)
+    tokens = case.startswith("tt_")
+    adapter_case = tokens or case.startswith("lora_") or case == "hybrid_zero3"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    fixed = torch.tensor([[1, 3, 32 if tokens else 15, 2]], device=device)
+    reference = load(root / "resume-logits-0.pt")
+
+    def reload_logits(model):
+        model.to(device).eval()
+        with torch.no_grad(), (
+            torch.autocast("cuda", dtype=torch.bfloat16)
+            if device == "cuda"
+            else nullcontext()
+        ):
+            logits = model(fixed).logits.float().cpu()
+        torch.testing.assert_close(
+            logits,
+            reference,
+            atol=0.005 if device == "cuda" else 1e-6,
+            rtol=0.05 if device == "cuda" else 1e-5,
+        )
+        return logits
+
     for rank in range(2):
         a = load(root / f"baseline-params-{rank}.pt")
         b = load(root / f"resume-params-{rank}.pt")
@@ -347,6 +507,21 @@ def verify(case, root):
         expected = baseline["evaluation"]
         actual = interrupted["evaluation"] + resumed["evaluation"]
         assert expected == actual
+        for record in (baseline, interrupted, resumed):
+            coverage = record["optimizer_coverage"]
+            assert coverage["expected"] == coverage["actual"] > 0
+            assert coverage["duplicates"] == 0
+            if tokens:
+                assert record["token_rows"]["stable_old_rows"]
+                assert record["token_rows"]["changed_selected_rows"] == 2
+            if case.endswith("_gc"):
+                assert record["gradient_checkpointing"]
+            if "zero3" in case:
+                assert any(p["partition"] < p["full"] for p in record["shards"])
+        if adapter_case:
+            for record in (baseline, resumed):
+                assert record["artifact_probe"]["gathered_parameters"] > 0
+                assert record["artifact_probe"]["save_pretrained_calls"] == int(rank == 0)
     for epoch in range(3):
         all_ids = []
         for rank in range(2):
@@ -354,39 +529,41 @@ def verify(case, root):
                 "seen"
             ][epoch * 6 : (epoch + 1) * 6]
         assert len(all_ids) == 12 and set(all_ids) == set(range(3, 12))
-    if case == "hybrid_zero3":
+    adapter_reload_error = None
+    if adapter_case:
         adapter = root / "resumed-run/adapter"
-        assert (adapter / "base_trainable_state.safetensors").is_file()
-        path = merge_lora(root / "base", adapter, root / "merged")
+        if case == "hybrid_zero3":
+            assert (adapter / "base_trainable_state.safetensors").is_file()
+        else:
+            from peft import PeftModel
+
+            adapted = PeftModel.from_pretrained(
+                AutoModelForCausalLM.from_pretrained(root / "base"), adapter
+            )
+            adapter_logits = reload_logits(adapted)
+            adapter_reload_error = float((adapter_logits - reference).abs().max())
+            del adapted
+        merge = merge_trainable_tokens if tokens else merge_lora
+        path = merge(root / "base", adapter, root / "merged")
     else:
         path = root / "resumed-run/final-model"
     model = AutoModelForCausalLM.from_pretrained(path).eval()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
-    with torch.no_grad(), (
-        torch.autocast("cuda", dtype=torch.bfloat16)
-        if device == "cuda"
-        else nullcontext()
-    ):
-        logits = (
-            model(torch.tensor([[1, 3, 15, 2]], device=device)).logits.float().cpu()
+    logits = reload_logits(model)
+    if tokens:
+        original = AutoModelForCausalLM.from_pretrained(root / "base")
+        assert_token_rows(
+            original.get_input_embeddings().weight.detach().cpu(),
+            model.get_input_embeddings().weight.detach().cpu(),
         )
-    reference = load(root / "resume-logits-0.pt")
-    torch.testing.assert_close(
-        logits,
-        reference,
-        atol=0.005 if device == "cuda" else 1e-6,
-        rtol=0.05 if device == "cuda" else 1e-5,
-    )
     # Independent one-process token NLL over the complete, unpadded dataset.
     total = 0.0
-    tokens = 0
+    supervised_tokens = 0
     with torch.no_grad(), (
         torch.autocast("cuda", dtype=torch.bfloat16)
         if device == "cuda"
         else nullcontext()
     ):
-        for row in Rows():
+        for row in Rows(tokens):
             batch = collate([row])
             labels = shift_causal_labels(batch["labels"]).to(device)
             values = model(batch["input_ids"].to(device)).logits.float()
@@ -396,19 +573,21 @@ def verify(case, root):
                 ignore_index=-100,
                 reduction="sum",
             ).item()
-            tokens += int((labels != -100).sum())
+            supervised_tokens += int((labels != -100).sum())
     expected = json.loads((root / "baseline-rank-0.json").read_text())["evaluation"][
         -1
     ]["eval_loss"]
-    assert abs(total / tokens - expected) < (0.005 if device == "cuda" else 1e-6)
+    assert abs(total / supervised_tokens - expected) < (0.005 if device == "cuda" else 1e-6)
     return dict(
         resume_exact=True,
         all_examples_covered=True,
         padded_examples_per_epoch=3,
         eval_examples=9,
-        eval_tokens=tokens,
-        eval_reference_error=abs(total / tokens - expected),
+        eval_tokens=supervised_tokens,
+        eval_reference_error=abs(total / supervised_tokens - expected),
         reload_max_error=float((logits - reference).abs().max()),
+        adapter_reload_max_error=adapter_reload_error,
+        token_rows_verified=tokens,
     )
 
 
@@ -423,7 +602,7 @@ def main():
         if os.environ.get("HARDENING_GPU") == "1":
             assert torch.cuda.is_available() and torch.cuda.is_bf16_supported()
         if phase == "prepare":
-            result.update(prepare(root))
+            result.update(prepare(case, root))
         elif phase == "verify":
             result.update(verify(case, root))
         else:

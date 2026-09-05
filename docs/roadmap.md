@@ -250,18 +250,21 @@ adapter save after resume                         ✅
 offline merged-model equivalence                  ✅
 ```
 
-The September 4 P1 run additionally validates two-node NCCL, actual ZeRO-3
+The September 4 P1 rerun, after the model-loading-context fix, additionally validates two-node NCCL, actual ZeRO-3
 partitions, adapter-only gathering and rank-0 serialization, LoRA/TrainableTokens
 with non-reentrant gradient checkpointing, distributed checkpoint/resume and
 offline merge/reload. Both ranks restore RNG/data position and match their
-uninterrupted baselines exactly. See [GPU validation evidence](gpu-validation.md).
+uninterrupted baselines exactly. These are historical passes on the source
+recorded in [GPU validation evidence](gpu-validation.md). The maintained
+hardening driver now includes `lora_zero3`, `lora_zero3_gc`, `tt_zero3` and
+`tt_zero3_gc`; restoring those entries does not constitute a new GPU run.
 
 Remaining distributed coverage:
 
 - two different local CUDA indices on one multi-GPU host
 - larger representative models, tied/untied embeddings and alternative GC modes
 - distributed offload and additional optimizer/scheduler ownership combinations
-- node failure, restart and node-local checkpoint storage
+- automatic restart/recovery and node-local checkpoint storage (prompt node-failure propagation is validated)
 - performance, peak memory and longer-run numerical stability
 
 Non-reentrant GC passes the pinned tiny-GPT-2 two-node tests; this does not
@@ -333,8 +336,8 @@ Later work includes:
 
 ## Single-GPU validation — 2026-09-04
 
-All eight single-L4 cases pass, including 40 fresh-process phases and 70 CPU
-regressions. See the [GPU validation matrix](gpu-validation.md) for exact versions,
+The recorded P0 run passes all eight single-L4 cases across 40 fresh-process
+phases. See the [GPU validation matrix](gpu-validation.md) for exact versions,
 assertions, evidence and limits. LoRA BF16/ZeRO-3/checkpointing, TrainableTokens
 BF16/ZeRO-3, advancing resume, adapter save/merge/reload, scheduler tracing and
 clean CPUAdam offload/resume/export are validated on tiny local models.
@@ -344,10 +347,12 @@ RNG consumption, resumed/subsequent epoch sampling and offload scheduler binding
 after optimizer restoration. One documented PyTorch optimizer-wrapper warning
 remains, with actual step ordering and LR verified. Init-time partitioning and
 real multi-rank GPU behavior were not validated in that single-card round.
-The subsequent [two-node GPU round](gpu-validation.md) reran all eight single-GPU
-cases on main and passed five two-node GPU cases after fixing the runtime
-model-loading context. The 8-vCPU quota permitted two g6.xlarge nodes, each
-with one L4; initialization-time partitioning remains unsupported.
+The subsequent [P1 rerun](gpu-validation.md) passed five two-node GPU cases
+after fixing the runtime model-loading context. Later hardening runs cover
+uneven multi-epoch resume, full/hybrid ZeRO-3 export and prompt failures; the
+portable runs add full/LoRA/TrainableTokens workflows and a short SmolLM2 fixture.
+The matrix distinguishes each tested source from current driver coverage.
+Initialization-time partitioning remains unsupported.
 
 ## Current delivery and deferred work
 

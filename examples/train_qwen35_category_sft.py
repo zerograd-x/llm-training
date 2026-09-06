@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 
 import torch
 from torch.utils.data import Dataset
@@ -58,11 +59,46 @@ def collate(rows):
     return {key: torch.stack([row[key] for row in rows]) for key in rows[0]}
 
 
+def _sync_to_s3(local_dir: Path, s3_uri: str) -> None:
+    if not s3_uri.startswith("s3://"):
+        raise ValueError("--artifact-s3 must be an s3:// URI")
+    subprocess.run(
+        ["aws", "s3", "sync", str(local_dir), s3_uri.rstrip("/"), "--only-show-errors"],
+        check=True,
+    )
+
+
+class S3SyncTrainer(Trainer):
+    """Trainer that mirrors durable checkpoints to S3 after each save."""
+
+    def __init__(self, *args, artifact_s3: str | None = None, **kwargs):
+        self.artifact_s3 = artifact_s3
+        super().__init__(*args, **kwargs)
+
+    def _sync_artifacts(self) -> None:
+        if self.artifact_s3 is None:
+            return
+        self.accelerator.wait_for_everyone()
+        if self.accelerator.is_main_process:
+            _sync_to_s3(Path(self.config.output_dir), self.artifact_s3)
+        self.accelerator.wait_for_everyone()
+
+    def save_checkpoint(self) -> Path:
+        checkpoint = super().save_checkpoint()
+        self._sync_artifacts()
+        return checkpoint
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("data", type=Path)
     parser.add_argument("--model", default="Qwen/Qwen3.5-4B")
     parser.add_argument("--output", type=Path, default=Path("./qwen35-4b-category-sft"))
+    parser.add_argument(
+        "--artifact-s3",
+        default=None,
+        help="Optional durable S3 prefix. Checkpoints and final-model are synced here.",
+    )
     parser.add_argument("--max-length", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
@@ -96,20 +132,28 @@ def main() -> None:
         checkpoint=CheckpointConfig(save_every_steps=args.save_every, keep_last=2),
     )
 
-    trainer = Trainer(
+    trainer = S3SyncTrainer(
         model=components.model,
         tokenizer=components.tokenizer,
         train_dataset=dataset,
         collate_fn=collate,
         config=config,
+        artifact_s3=args.artifact_s3,
     )
     state = trainer.train()
 
+    # Checkpoints are resumable distributed training state. Export a separate
+    # standard Hugging Face model for inference after full fine-tuning.
+    trainer.export_model()
+    trainer._sync_artifacts()
+
     if trainer.accelerator.is_main_process:
         peak_gib = torch.cuda.max_memory_allocated() / (1024 ** 3)
+        final_model = args.output / "final-model"
         print(
             f"Qwen3.5-4B SFT complete: world_size={trainer.accelerator.num_processes} "
-            f"global_step={state.global_step} peak_allocated_gib={peak_gib:.2f}"
+            f"global_step={state.global_step} peak_allocated_gib={peak_gib:.2f} "
+            f"final_model={final_model} artifact_s3={args.artifact_s3 or 'disabled'}"
         )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import shutil
 
 import torch
 from torch.utils.data import Dataset
@@ -16,6 +17,7 @@ from llm_training import (
     SchedulerConfig,
     Trainer,
     TrainingConfig,
+    load_causal_lm,
 )
 
 
@@ -117,12 +119,47 @@ def main():
     if state.global_step < 1:
         raise AssertionError("training did not produce an optimizer update")
 
-    peak = torch.cuda.max_memory_allocated() / (1024 ** 3)
+    checkpoint = Path(args.output) / f"checkpoint-{state.global_step:08d}"
+    if trainer.accelerator.is_main_process and not checkpoint.exists():
+        raise AssertionError(f"checkpoint missing: {checkpoint}")
+
+    # Full fine-tuning must also produce a portable Hugging Face model.
+    trainer.export_model()
+    trainer.accelerator.wait_for_everyone()
+    final_model = Path(args.output) / "final-model"
     if trainer.accelerator.is_main_process:
-        print(f"PASS qwen35_4b_single_node world_size=4 global_step={state.global_step} peak_allocated_gib={peak:.2f}")
-        checkpoint = Path(args.output) / f"checkpoint-{state.global_step:08d}"
-        if not checkpoint.exists():
-            raise AssertionError(f"checkpoint missing: {checkpoint}")
+        if not (final_model / "config.json").exists():
+            raise AssertionError("exported config.json missing")
+        if not any(final_model.glob("*.safetensors")):
+            raise AssertionError("exported safetensors weights missing")
+
+    # Free the distributed training model before reload so the test exercises
+    # the exported artifact rather than relying on the in-memory trainer state.
+    del trainer
+    del components
+    torch.cuda.empty_cache()
+
+    reloaded = load_causal_lm(
+        str(final_model),
+        model_kwargs={"torch_dtype": torch.bfloat16},
+    )
+    reloaded.model.to(torch.cuda.current_device())
+    sample = rows[0]
+    with torch.no_grad():
+        outputs = reloaded.model(
+            input_ids=sample["input_ids"].unsqueeze(0).to(torch.cuda.current_device()),
+            attention_mask=sample["attention_mask"].unsqueeze(0).to(torch.cuda.current_device()),
+        )
+    if not torch.isfinite(outputs.logits).all():
+        raise AssertionError("reloaded exported model produced non-finite logits")
+
+    peak = torch.cuda.max_memory_allocated() / (1024 ** 3)
+    if runtime.is_main_process:
+        print(
+            "PASS qwen35_4b_single_node "
+            f"world_size=4 global_step={state.global_step} "
+            f"peak_allocated_gib={peak:.2f} export_reload_forward=ok"
+        )
 
 
 if __name__ == "__main__":

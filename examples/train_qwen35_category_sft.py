@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+from torch.utils.data import Dataset
+
+from llm_training import (
+    CheckpointConfig,
+    DeepSpeedConfig,
+    GradientCheckpointingConfig,
+    OptimizerConfig,
+    SchedulerConfig,
+    Trainer,
+    TrainingConfig,
+    load_causal_lm,
+)
+
+
+class CategoryRows(Dataset):
+    def __init__(self, path: Path, tokenizer, max_length: int):
+        self.rows = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            prompt = (
+                f"System: {record['system']}\n"
+                f"User: {record['user']}\n"
+                "Assistant:"
+            )
+            answer = " " + record["assistant"] + tokenizer.eos_token
+            prompt_ids = tokenizer(prompt, add_special_tokens=True)["input_ids"]
+            answer_ids = tokenizer(answer, add_special_tokens=False)["input_ids"]
+            input_ids = (prompt_ids + answer_ids)[:max_length]
+            labels = [-100] * min(len(prompt_ids), len(input_ids))
+            labels += input_ids[len(labels):]
+            attention_mask = [1] * len(input_ids)
+            pad = max_length - len(input_ids)
+            input_ids += [tokenizer.pad_token_id] * pad
+            attention_mask += [0] * pad
+            labels += [-100] * pad
+            self.rows.append({
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+                "labels": torch.tensor(labels, dtype=torch.long),
+            })
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, index):
+        return self.rows[index]
+
+
+def collate(rows):
+    return {key: torch.stack([row[key] for row in rows]) for key in rows[0]}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("data", type=Path)
+    parser.add_argument("--model", default="Qwen/Qwen3.5-9B")
+    parser.add_argument("--output", type=Path, default=Path("./qwen35-category-sft"))
+    parser.add_argument("--max-length", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--grad-accum", type=int, default=8)
+    parser.add_argument("--epochs", type=int, default=1)
+    args = parser.parse_args()
+
+    components = load_causal_lm(
+        args.model,
+        model_kwargs={"dtype": torch.bfloat16},
+    )
+    dataset = CategoryRows(args.data, components.tokenizer, args.max_length)
+
+    config = TrainingConfig(
+        output_dir=str(args.output),
+        num_epochs=args.epochs,
+        per_device_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        mixed_precision="bf16",
+        optimizer=OptimizerConfig(learning_rate=2e-5, weight_decay=0.1),
+        scheduler=SchedulerConfig(name="cosine", warmup_ratio=0.03),
+        gradient_checkpointing=GradientCheckpointingConfig(enabled=True),
+        deepspeed=DeepSpeedConfig(zero_stage=3),
+        checkpoint=CheckpointConfig(save_every_steps=500, keep_last=2),
+    )
+
+    trainer = Trainer(
+        model=components.model,
+        tokenizer=components.tokenizer,
+        train_dataset=dataset,
+        collate_fn=collate,
+        config=config,
+    )
+    trainer.train()
+
+
+if __name__ == "__main__":
+    main()

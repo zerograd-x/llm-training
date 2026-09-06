@@ -24,19 +24,17 @@ def _load_causal_lm_model(
     model_name_or_path: str,
     model_kwargs: dict[str, Any],
 ) -> PreTrainedModel:
-    """Load a text-only causal LM, including native multimodal families.
+    """Load a text-only causal LM, including Qwen3.5 checkpoints.
 
-    Some model families publish a multimodal top-level config while also exposing
-    a dedicated text-only causal-LM class. Qwen3.5 is one such family: its public
-    checkpoints use ``model_type=qwen3_5``, while Transformers recommends
-    ``Qwen3_5ForCausalLM`` for text-only generation/training. Detect that family
-    from config and use the text-only class so callers do not need a processor or
-    vision inputs. All ordinary decoder-only checkpoints continue through
-    ``AutoModelForCausalLM``.
+    Qwen3.5 publishes a multimodal top-level checkpoint (``model_type=qwen3_5``)
+    while Transformers exposes ``Qwen3_5ForCausalLM`` for text-only use. A
+    previously exported text-only checkpoint may instead have
+    ``model_type=qwen3_5_text``. Route both forms through the text-only class so
+    training never needs an image processor or vision inputs.
     """
 
     config = AutoConfig.from_pretrained(model_name_or_path)
-    if getattr(config, "model_type", None) == "qwen3_5":
+    if getattr(config, "model_type", None) in {"qwen3_5", "qwen3_5_text"}:
         try:
             from transformers import Qwen3_5ForCausalLM
         except ImportError as exc:

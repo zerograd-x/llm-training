@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import torch
@@ -60,13 +61,18 @@ def collate(rows):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("data", type=Path)
-    parser.add_argument("--model", default="Qwen/Qwen3.5-9B")
-    parser.add_argument("--output", type=Path, default=Path("./qwen35-category-sft"))
+    parser.add_argument("--model", default="Qwen/Qwen3.5-4B")
+    parser.add_argument("--output", type=Path, default=Path("./qwen35-4b-category-sft"))
     parser.add_argument("--max-length", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--save-every", type=int, default=500)
     args = parser.parse_args()
+
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if world_size > 1 and not torch.cuda.is_available():
+        raise RuntimeError("Distributed Qwen3.5 SFT requires CUDA")
 
     components = load_causal_lm(
         args.model,
@@ -82,9 +88,12 @@ def main() -> None:
         mixed_precision="bf16",
         optimizer=OptimizerConfig(learning_rate=2e-5, weight_decay=0.1),
         scheduler=SchedulerConfig(name="cosine", warmup_ratio=0.03),
-        gradient_checkpointing=GradientCheckpointingConfig(enabled=True),
+        gradient_checkpointing=GradientCheckpointingConfig(
+            enabled=True,
+            use_reentrant=False,
+        ),
         deepspeed=DeepSpeedConfig(zero_stage=3),
-        checkpoint=CheckpointConfig(save_every_steps=500, keep_last=2),
+        checkpoint=CheckpointConfig(save_every_steps=args.save_every, keep_last=2),
     )
 
     trainer = Trainer(
@@ -94,7 +103,14 @@ def main() -> None:
         collate_fn=collate,
         config=config,
     )
-    trainer.train()
+    state = trainer.train()
+
+    if trainer.accelerator.is_main_process:
+        peak_gib = torch.cuda.max_memory_allocated() / (1024 ** 3)
+        print(
+            f"Qwen3.5-4B SFT complete: world_size={trainer.accelerator.num_processes} "
+            f"global_step={state.global_step} peak_allocated_gib={peak_gib:.2f}"
+        )
 
 
 if __name__ == "__main__":

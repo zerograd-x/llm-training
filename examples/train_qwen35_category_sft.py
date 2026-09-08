@@ -113,7 +113,7 @@ def main() -> None:
         freeze=FreezeConfig(
             train_last_n_layers=2,
             train_embeddings=False,
-            train_lm_head=True,
+            train_lm_head=False,
         ),
         optimizer=OptimizerConfig(learning_rate=2e-5, weight_decay=0.1),
         scheduler=SchedulerConfig(name="cosine", warmup_ratio=0.03),
@@ -146,7 +146,7 @@ def main() -> None:
         print(
             f"Qwen3.5-4B SFT complete: world_size={trainer.accelerator.num_processes} "
             f"global_step={state.global_step} peak_allocated_gib={peak_gib:.2f} "
-            "trainable=last_2_layers+lm_head"
+            "trainable=last_2_layers"
         )
 
 

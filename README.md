@@ -5,7 +5,7 @@ A small, opinionated training runtime for decoder-only causal language models.
 The project is intentionally split from [`llm-training-data`](https://github.com/zerograd-x/llm-training-data):
 
 - **llm-training-data** owns rendering, tokenization, label construction, padding, and packing.
-- **llm-training** owns model loading, trainable-parameter policy, loss, optimization, checkpoint/resume, evaluation, and export.
+- **llm-training** owns model loading, trainable-parameter policy, loss, optimization, checkpoint/resume, evaluation, run metadata, and export.
 - **model-artifact-transfer** can publish completed artifacts after training.
 
 Dependency direction is one-way: `llm-training` may consume `llm-training-data`; `llm-training-data` must not depend on this package.
@@ -25,9 +25,13 @@ The core runtime supports:
 - deterministic epoch sampling
 - resumable checkpoints
 - scheduled validation
+- effective training-plan inspection
+- stable run identity and persisted run metadata
 - standard Hugging Face model export
 
 Serving, data systems, remote orchestration, retrieval, and application-specific model wrappers stay outside the core runtime.
+
+The design goal is not to expose every backend knob. It is to make training configuration hard to misinterpret: shared hyperparameters have one source of truth, user-facing `*_steps` values always mean synchronized optimizer updates, and the runtime records the effective plan that actually executes.
 
 ## Install
 
@@ -61,9 +65,33 @@ llm-training-data
 llm-training
 (model/adaptation/loss/optimizer/train/checkpoint/eval/export)
     |
-    v
-checkpoint / adapter / exported model
+    +--> run.json
+    +--> training-plan.json
+    +--> checkpoints / adapter / exported model
 ```
+
+## Inspect before training
+
+A config should explain what it will actually do before a large job starts.
+
+```bash
+python -m llm_training.inspect training_config.json \
+  --train-examples 50000 \
+  --world-size 4 \
+  --model Qwen/Qwen3.5-4B \
+  --max-sequence-length 256
+```
+
+The effective plan reports:
+
+- trainable-parameter policy and, after model adaptation, exact trainable parameter counts
+- per-device batch, gradient accumulation, global batch, and optimizer-step count
+- optimizer and scheduler ownership plus LR, betas, epsilon, weight decay, and warmup
+- DeepSpeed ZeRO/offload/clipping settings and the generated effective DeepSpeed config
+- checkpoint/evaluation cadence and retention
+- run identity, output path, durable artifact URI, and configuration warnings
+
+Supported training paths persist the same information to `training-plan.json`.
 
 ## Direct training
 
@@ -103,15 +131,37 @@ result = run_training(
     train_data="./train.jsonl",
     validation_data="./validation.jsonl",
     config=TrainingConfig(output_dir="./run"),
+    run_id="experiment-001",
+    artifact_root_uri="s3://my-bucket/training",
 )
 
+print(result.run_id)
 print(result.model_path)
 print(result.checkpoint_path)
+print(result.artifact_uri)
 ```
+
+A run owns its output directory. `run.json` records that identity, and durable artifacts use `artifact_root_uri/run_id/` instead of ad-hoc path construction.
 
 See [`docs/training.md`](docs/training.md).
 
-## DeepSpeed
+## Optimizer and DeepSpeed ownership
+
+`OptimizerConfig` is the single source of truth for common optimizer hyperparameters:
+
+```python
+OptimizerConfig(
+    learning_rate=2e-5,
+    weight_decay=0.1,
+    beta1=0.9,
+    beta2=0.95,
+    eps=1e-8,
+)
+```
+
+With `DeepSpeedConfig(zero_stage=3)` alone, the optimizer and scheduler are Torch/Hugging Face configured and DeepSpeed prepares/wraps their runtime state. DeepSpeed-owned optimizer/scheduler implementations are explicit opt-ins; they cannot silently override shared optimizer or scheduler settings.
+
+Batch size also has one source of truth in `TrainingConfig`. DeepSpeed receives automatic batch values rather than requiring a second manually synchronized micro-batch setting.
 
 ```python
 from llm_training import DeepSpeedConfig, TrainingConfig
@@ -123,7 +173,9 @@ config = TrainingConfig(
 )
 ```
 
-ZeRO-3 partitions parameters after `accelerator.prepare(...)`. The current loading path does not partition model parameters during `from_pretrained()` itself.
+All public step settings—warmup, logging, evaluation, and checkpoint cadence—mean synchronized optimizer updates regardless of world size. Backend-specific scheduler ticks are translated internally.
+
+ZeRO-3 currently partitions parameters after `accelerator.prepare(...)`; the loading path still materializes a complete model on each rank during `from_pretrained()`.
 
 See [`docs/deepspeed.md`](docs/deepspeed.md) and [`docs/distributed-runtime.md`](docs/distributed-runtime.md).
 
@@ -159,8 +211,8 @@ GPU checks are opt-in and are not part of normal push/PR CI.
 
 Long-lived documentation is intentionally small:
 
-- [`training.md`](docs/training.md) — training entry points and artifact lifecycle
-- [`deepspeed.md`](docs/deepspeed.md) — ZeRO and DeepSpeed ownership
+- [`training.md`](docs/training.md) — training entry points, effective plans, run identity, and artifact lifecycle
+- [`deepspeed.md`](docs/deepspeed.md) — optimizer/scheduler ownership, step semantics, ZeRO, offload, and clipping
 - [`distributed-runtime.md`](docs/distributed-runtime.md) — distributed runtime contracts
 - [`evaluation.md`](docs/evaluation.md) — validation behavior and metrics
 - [`peft.md`](docs/peft.md) — LoRA and PEFT behavior

@@ -1,0 +1,7 @@
+# GPU stack validated on AWS g5.12xlarge (4x NVIDIA A10G) on 2026-09-08.
+# Keep pyproject.toml as the supported-version contract; use this file for reproducible GPU setup.
+torch==2.14.0
+transformers==5.16.1
+accelerate==1.14.0
+deepspeed==0.19.6
+pytest==8.4.2

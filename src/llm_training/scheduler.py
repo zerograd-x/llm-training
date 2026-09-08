@@ -37,6 +37,12 @@ def resolve_warmup_steps(
     *,
     num_training_steps: int,
 ) -> int:
+    """Resolve warmup in user-visible optimizer-step units.
+
+    Every public ``*_steps`` setting in llm-training is expressed in synchronized
+    optimizer updates. Backend-specific scheduler stepping is translated later
+    and never changes the meaning of ``SchedulerConfig.warmup_steps``.
+    """
     if num_training_steps <= 0:
         raise ValueError("num_training_steps must be > 0")
 
@@ -51,7 +57,16 @@ def build_scheduler(
     config: SchedulerConfig,
     *,
     num_training_steps: int,
+    scheduler_step_scale: int = 1,
 ) -> LRScheduler:
+    """Build a scheduler from optimizer-step semantics.
+
+    ``num_training_steps`` and configured warmup are optimizer updates.
+    ``scheduler_step_scale`` is an internal Accelerate/backend translation for
+    schedulers that advance more than once per synchronized optimizer update.
+    """
+    if scheduler_step_scale <= 0:
+        raise ValueError("scheduler_step_scale must be > 0")
     warmup_steps = resolve_warmup_steps(
         config,
         num_training_steps=num_training_steps,
@@ -60,8 +75,8 @@ def build_scheduler(
     return get_scheduler(
         config.name,
         optimizer=optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=num_training_steps,
+        num_warmup_steps=warmup_steps * scheduler_step_scale,
+        num_training_steps=num_training_steps * scheduler_step_scale,
     )
 
 
@@ -70,8 +85,13 @@ def build_training_scheduler(
     config: TrainingConfig,
     *,
     num_training_steps: int,
+    scheduler_step_scale: int = 1,
 ) -> Any:
-    """Build the real scheduler or a DeepSpeed scheduler placeholder."""
+    """Build the real scheduler or a DeepSpeed scheduler placeholder.
+
+    Public step counts remain optimizer updates; backend-specific scaling is
+    applied only to the underlying scheduler horizon.
+    """
 
     ds = config.deepspeed
     if ds is None or ds.scheduler is None:
@@ -79,8 +99,11 @@ def build_training_scheduler(
             optimizer,
             config.scheduler,
             num_training_steps=num_training_steps,
+            scheduler_step_scale=scheduler_step_scale,
         )
 
+    if scheduler_step_scale <= 0:
+        raise ValueError("scheduler_step_scale must be > 0")
     warmup_steps = resolve_warmup_steps(
         config.scheduler,
         num_training_steps=num_training_steps,
@@ -90,14 +113,13 @@ def build_training_scheduler(
         raise ValueError(
             f"DeepSpeed {ds.scheduler.type} requires at least one warmup step; "
             "set scheduler.warmup_steps >= 1 or choose a warmup_ratio that "
-            "resolves to at least one step"
+            "resolves to at least one optimizer step"
         )
 
     from accelerate.utils.deepspeed import DummyScheduler
 
     return DummyScheduler(
         optimizer,
-        total_num_steps=num_training_steps,
-        warmup_num_steps=warmup_steps,
+        total_num_steps=num_training_steps * scheduler_step_scale,
+        warmup_num_steps=warmup_steps * scheduler_step_scale,
     )
-

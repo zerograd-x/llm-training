@@ -1,4 +1,4 @@
-"""Subprocess entry point for the portable workflow."""
+"""Subprocess entry point for high-level training stages."""
 
 import json
 import os
@@ -14,7 +14,7 @@ from .data import adapt_column_batch_collator
 from .distributed import DistributedRuntime
 from .manifest import ArtifactManifest, write_artifact_manifest
 from .trainer import Trainer
-from .workflow import training_config_from_dict
+from .training import training_config_from_dict
 
 
 def run(stage, request):
@@ -83,6 +83,7 @@ def run(stage, request):
             world_size=runtime.num_processes,
             mixed_precision=config.mixed_precision,
         )
+
     if stage == "merge":
         adapter = request["adapter_path"]
         ArtifactManifest.load(adapter).validate(adapter, base_path=base)
@@ -94,6 +95,7 @@ def run(stage, request):
             destination, kind="model", tokenizer=tokenizer, **kwargs
         )
         return dict(model_path=str(destination))
+
     if stage == "infer":
         from llm_training_data import ChatPromptFormatter
 
@@ -142,7 +144,8 @@ def run(stage, request):
             / len(predictions),
         }
         return dict(predictions_path=str(output_path), metrics=metrics)
-    raise ValueError(f"Unknown workflow stage: {stage}")
+
+    raise ValueError(f"Unknown training stage: {stage}")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,13 @@
-"""Plain-Python workflow; each model lifecycle stage runs in a fresh process."""
+"""High-level local training runner with isolated lifecycle stages."""
 
 from dataclasses import asdict, dataclass
 from importlib.util import find_spec
 import json
 import os
 from pathlib import Path
-import subprocess
 import signal
 import socket
+import subprocess
 import sys
 
 from . import config as configuration
@@ -17,7 +17,7 @@ from .vocabulary import expand_vocabulary
 
 
 @dataclass(frozen=True)
-class WorkflowResult:
+class TrainingResult:
     model_path: str
     checkpoint_path: str
     adapter_path: str | None
@@ -75,7 +75,7 @@ def read_examples(value):
     return result
 
 
-def _stage(name, request, directory, timeout):
+def _run_stage(name, request, directory, timeout):
     path = directory / f"{name}-request.json"
     path.write_text(json.dumps(request) + "\n")
     result_path = directory / f"{name}-result.json"
@@ -91,8 +91,6 @@ def _stage(name, request, directory, timeout):
         env.pop(key, None)
     command = [sys.executable]
     if name == "train" and request["config"].get("deepspeed") is not None:
-        # Establish the single-rank process group through PyTorch's launcher;
-        # a plain Python DeepSpeed launch would otherwise depend on MPI discovery.
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
@@ -103,9 +101,9 @@ def _stage(name, request, directory, timeout):
             "--master_addr=127.0.0.1",
             f"--master_port={port}",
         ]
-    command += ["-m", "llm_training.workflow_worker", name, str(path), str(result_path)]
+    command += ["-m", "llm_training.training_worker", name, str(path), str(result_path)]
     with (directory / f"{name}.log").open("w") as log:
-        result = subprocess.Popen(
+        process = subprocess.Popen(
             command,
             env=env,
             stdout=log,
@@ -113,22 +111,22 @@ def _stage(name, request, directory, timeout):
             start_new_session=True,
         )
         try:
-            result.wait(timeout=timeout)
+            process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            os.killpg(result.pid, signal.SIGKILL)
-            result.wait()
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
             raise TimeoutError(
-                f"Workflow {name} timed out; see {directory/name}.log"
+                f"Training stage {name} timed out; see {directory/name}.log"
             ) from None
-    if result.returncode != 0 or not result_path.is_file():
-        raise RuntimeError(f"Workflow {name} failed; see {directory/name}.log")
+    if process.returncode != 0 or not result_path.is_file():
+        raise RuntimeError(f"Training stage {name} failed; see {directory/name}.log")
     payload = json.loads(result_path.read_text())
     if payload.get("ok") is not True:
-        raise RuntimeError(f"Workflow {name} did not report success")
+        raise RuntimeError(f"Training stage {name} did not report success")
     return payload
 
 
-def run_training_workflow(
+def run_training(
     *,
     base_path,
     train_data,
@@ -144,14 +142,14 @@ def run_training_workflow(
     inference_device="cpu",
     timeout=900,
 ):
-    """Train/export locally; optional fresh-process generation with exact match.
+    """Train and export locally, with optional fresh-process generation.
 
     Datasets are JSONL paths or lists of prompt/completion dictionaries. Split
-    overlap is rejected by explicit id when present and exact example content.
-    This initial driver launches one training process; use the Trainer/runtime
-    APIs and distributed workers for multi-rank jobs.
+    overlap is rejected by explicit id when present and by exact example
+    content. This high-level runner uses one training process; use ``Trainer``
+    and the distributed runtime directly for multi-rank launches.
     """
-    require_single_process("Training workflow driver")
+    require_single_process("run_training")
     config.validate()
     if max_sequence_length <= 0 or max_new_tokens <= 0:
         raise ValueError("Sequence lengths must be positive")
@@ -186,14 +184,16 @@ def run_training_workflow(
         raise ValueError("Inference requires validation or test data")
     if find_spec("llm_training_data") is None:
         raise ImportError(
-            "The portable workflow requires llm-training-data; install the companion package first"
+            "run_training requires llm-training-data; install the companion package first"
         )
+
     root = Path(config.output_dir).resolve()
     if root.exists() and any(root.iterdir()):
-        raise ValueError("Workflow requires a new output directory")
+        raise ValueError("run_training requires a new output directory")
     root.mkdir(parents=True, exist_ok=True)
-    stage_dir = root / "workflow"
+    stage_dir = root / "stages"
     stage_dir.mkdir()
+
     actual_base = str(Path(base_path).resolve())
     tokens = {}
     if (Path(actual_base) / "artifact.json").is_file():
@@ -236,6 +236,7 @@ def run_training_workflow(
 
         checkpoint = resolve_resume_checkpoint(root, config.checkpoint.resume_from)
         ArtifactManifest.load(checkpoint).validate(checkpoint, base_path=actual_base)
+
     request = dict(
         base_path=actual_base,
         config=config.to_dict(),
@@ -247,11 +248,12 @@ def run_training_workflow(
         inference_device=inference_device,
     )
     request["config"]["output_dir"] = str(root)
-    trained = _stage("train", request, stage_dir, timeout)
+    trained = _run_stage("train", request, stage_dir, timeout)
     artifact = trained["adapter_path"] or trained["model_path"]
     ArtifactManifest.load(artifact).validate(artifact, base_path=actual_base)
+
     if trained["adapter_path"]:
-        merged = _stage(
+        merged = _run_stage(
             "merge",
             dict(request, adapter_path=trained["adapter_path"]),
             stage_dir,
@@ -261,10 +263,11 @@ def run_training_workflow(
     else:
         model_path = trained["model_path"]
     ArtifactManifest.load(model_path).validate(model_path, base_path=actual_base)
+
     evaluation = dict(validation=trained["evaluation"])
     predictions_path = None
     if inference:
-        generated = _stage(
+        generated = _run_stage(
             "infer",
             dict(request, model_path=model_path, score_data=scoring),
             stage_dir,
@@ -272,14 +275,15 @@ def run_training_workflow(
         )
         predictions_path = generated["predictions_path"]
         evaluation["generation"] = generated["metrics"]
-    result = WorkflowResult(
+
+    result = TrainingResult(
         model_path,
         trained["checkpoint_path"],
         trained["adapter_path"],
         predictions_path,
         evaluation,
     )
-    (root / "workflow-result.json").write_text(
+    (root / "training-result.json").write_text(
         json.dumps(asdict(result), indent=2) + "\n"
     )
     return result

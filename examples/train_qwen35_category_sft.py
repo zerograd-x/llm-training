@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 
 import torch
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
 from llm_training import (
@@ -39,10 +40,6 @@ class CategoryRows(Dataset):
             labels = [-100] * min(len(prompt_ids), len(input_ids))
             labels += input_ids[len(labels):]
             attention_mask = [1] * len(input_ids)
-            pad = max_length - len(input_ids)
-            input_ids += [tokenizer.pad_token_id] * pad
-            attention_mask += [0] * pad
-            labels += [-100] * pad
             self.rows.append({
                 "input_ids": torch.tensor(input_ids, dtype=torch.long),
                 "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
@@ -56,8 +53,29 @@ class CategoryRows(Dataset):
         return self.rows[index]
 
 
-def collate(rows):
-    return {key: torch.stack([row[key] for row in rows]) for key in rows[0]}
+def make_collate(tokenizer):
+    pad_token_id = tokenizer.pad_token_id
+
+    def collate(rows):
+        return {
+            "input_ids": pad_sequence(
+                [row["input_ids"] for row in rows],
+                batch_first=True,
+                padding_value=pad_token_id,
+            ),
+            "attention_mask": pad_sequence(
+                [row["attention_mask"] for row in rows],
+                batch_first=True,
+                padding_value=0,
+            ),
+            "labels": pad_sequence(
+                [row["labels"] for row in rows],
+                batch_first=True,
+                padding_value=-100,
+            ),
+        }
+
+    return collate
 
 
 def sync_to_s3(local_dir: Path, s3_uri: str) -> None:
@@ -88,8 +106,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("./qwen35-4b-category-sft"))
     parser.add_argument("--artifact-s3", default=None)
     parser.add_argument("--max-length", type=int, default=256)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--grad-accum", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--grad-accum", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--save-every", type=int, default=500)
     args = parser.parse_args()
@@ -129,7 +147,7 @@ def main() -> None:
         model=components.model,
         tokenizer=components.tokenizer,
         train_dataset=dataset,
-        collate_fn=collate,
+        collate_fn=make_collate(components.tokenizer),
         config=config,
         artifact_s3=args.artifact_s3,
     )
@@ -146,7 +164,7 @@ def main() -> None:
         print(
             f"Qwen3.5-4B SFT complete: world_size={trainer.accelerator.num_processes} "
             f"global_step={state.global_step} peak_allocated_gib={peak_gib:.2f} "
-            "trainable=last_2_layers"
+            "trainable=last_2_layers dynamic_padding=true"
         )
 
 

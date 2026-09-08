@@ -135,11 +135,12 @@ def test_training_plan_matches_distributed_step_accounting(tmp_path) -> None:
     assert plan.warmup_optimizer_steps == 46
     assert plan.expected_checkpoints == 4
     assert plan.retained_checkpoints == 2
-    assert plan.optimizer_owner == "torch"
+    assert plan.optimizer_owner == "torch-configured / deepspeed-prepared"
     assert plan.optimizer_type == "AdamW"
     assert plan.learning_rate == 3e-5
     assert plan.weight_decay == 0.05
     assert plan.beta2 == 0.98
+    assert plan.gradient_clip_owner == "deepspeed engine"
     assert plan.deepspeed_stage == 3
     assert plan.effective_deepspeed_config["train_micro_batch_size_per_gpu"] == "auto"
     assert {warning.code for warning in plan.warnings} == {

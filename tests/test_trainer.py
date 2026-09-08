@@ -4,8 +4,10 @@ import pytest
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.optim import AdamW
 from torch.utils.data import Dataset
 
+import llm_training.scheduler as scheduler_module
 from llm_training import (
     BaseLoss,
     CheckpointConfig,
@@ -17,6 +19,7 @@ from llm_training import (
     Trainer,
     TrainingConfig,
     build_training_plan,
+    resolve_run_identity,
 )
 from llm_training.checkpoint import find_latest_checkpoint
 
@@ -99,22 +102,85 @@ def test_training_plan_matches_distributed_step_accounting(tmp_path) -> None:
         num_epochs=1,
         per_device_batch_size=8,
         gradient_accumulation_steps=1,
+        optimizer=OptimizerConfig(
+            learning_rate=3e-5,
+            weight_decay=0.05,
+            beta1=0.9,
+            beta2=0.98,
+            eps=1e-7,
+        ),
         scheduler=SchedulerConfig(name="cosine", warmup_ratio=0.03),
         checkpoint=CheckpointConfig(save_every_steps=500, keep_last=2),
         deepspeed=DeepSpeedConfig(zero_stage=3),
     )
+    identity = resolve_run_identity(
+        config.output_dir,
+        run_id="qwen35-50k",
+        artifact_root_uri="s3://bucket/training",
+    )
 
-    plan = build_training_plan(config, train_examples=50_000, world_size=4)
+    plan = build_training_plan(
+        config,
+        train_examples=50_000,
+        world_size=4,
+        run_identity=identity,
+    )
 
+    assert plan.run_id == "qwen35-50k"
+    assert plan.artifact_uri == "s3://bucket/training/qwen35-50k/"
     assert plan.global_batch_size == 32
     assert plan.batches_per_rank == 1563
     assert plan.optimizer_steps == 1563
     assert plan.scheduler_steps == 6252
-    assert plan.warmup_optimizer_steps == 47
+    assert plan.warmup_optimizer_steps == 46
     assert plan.expected_checkpoints == 4
     assert plan.retained_checkpoints == 2
+    assert plan.optimizer_owner == "torch"
+    assert plan.optimizer_type == "AdamW"
+    assert plan.learning_rate == 3e-5
+    assert plan.weight_decay == 0.05
+    assert plan.beta2 == 0.98
+    assert plan.deepspeed_stage == 3
+    assert plan.effective_deepspeed_config["train_micro_batch_size_per_gpu"] == "auto"
     assert {warning.code for warning in plan.warnings} == {
         "zero3_initial_load_unpartitioned"
+    }
+
+
+def test_explicit_warmup_steps_remain_optimizer_steps_with_world_size(
+    tmp_path, monkeypatch
+) -> None:
+    parameter = nn.Parameter(torch.ones(()))
+    optimizer = AdamW([parameter], lr=1e-3)
+    config = TrainingConfig(
+        output_dir=str(tmp_path),
+        scheduler=SchedulerConfig(name="linear", warmup_steps=100),
+    )
+    captured = {}
+
+    def fake_get_scheduler(name, *, optimizer, num_warmup_steps, num_training_steps):
+        captured.update(
+            name=name,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+        return SimpleNamespace()
+
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    monkeypatch.setattr(scheduler_module, "get_scheduler", fake_get_scheduler)
+
+    scheduler_module.build_training_scheduler(
+        optimizer,
+        config,
+        num_training_steps=800,
+    )
+
+    # Trainer's internal horizon is 800 scheduler ticks = 200 optimizer steps.
+    # User warmup_steps=100 must therefore become 400 internal ticks, not 100.
+    assert captured == {
+        "name": "linear",
+        "num_warmup_steps": 400,
+        "num_training_steps": 800,
     }
 
 

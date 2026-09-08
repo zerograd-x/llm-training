@@ -45,6 +45,7 @@ from .inspection import (
     TrainingPlan,
     build_training_plan,
     format_training_plan,
+    save_training_plan,
 )
 from .loss import (
     IGNORE_INDEX,
@@ -60,6 +61,7 @@ from .model_introspection import (
     find_transformer_layers,
     weights_are_tied,
 )
+from .run import RunIdentity, resolve_run_identity, write_run_identity
 from .trainer import Trainer
 from .evaluation import EvaluationMetric
 from .manifest import ArtifactManifest, write_artifact_manifest
@@ -88,6 +90,7 @@ __all__ = [
     "ModelAdaptationSummary",
     "OptimizerConfig",
     "PlanWarning",
+    "RunIdentity",
     "SchedulerConfig",
     "TrainableTokensConfig",
     "Trainer",
@@ -115,6 +118,7 @@ __all__ = [
     "merge_lora",
     "merge_trainable_tokens",
     "require_single_process",
+    "resolve_run_identity",
     "resolve_trainable_token_ids",
     "rows_to_column_batch",
     "run_training",
@@ -122,8 +126,10 @@ __all__ = [
     "save_lora_adapter",
     "save_trainable_tokens_adapter",
     "save_training_checkpoint",
+    "save_training_plan",
     "shift_causal_labels",
     "summarize_trainable_parameters",
     "weights_are_tied",
     "write_artifact_manifest",
+    "write_run_identity",
 ]

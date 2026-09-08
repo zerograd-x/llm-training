@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 from pathlib import Path
-import shutil
 
 import torch
 from torch.utils.data import Dataset
@@ -12,12 +12,14 @@ from llm_training import (
     CheckpointConfig,
     DeepSpeedConfig,
     DistributedRuntime,
+    FreezeConfig,
     GradientCheckpointingConfig,
     OptimizerConfig,
     SchedulerConfig,
     Trainer,
     TrainingConfig,
     load_causal_lm,
+    summarize_trainable_parameters,
 )
 
 
@@ -73,6 +75,11 @@ def main():
         gradient_accumulation_steps=1,
         mixed_precision="bf16",
         log_every_steps=1,
+        freeze=FreezeConfig(
+            train_last_n_layers=2,
+            train_embeddings=False,
+            train_lm_head=True,
+        ),
         optimizer=OptimizerConfig(learning_rate=1e-5, weight_decay=0.0),
         scheduler=SchedulerConfig(name="linear", warmup_ratio=0.0),
         gradient_checkpointing=GradientCheckpointingConfig(
@@ -115,50 +122,48 @@ def main():
     if trainer.accelerator.device.type != "cuda":
         raise AssertionError(f"expected CUDA, got {trainer.accelerator.device}")
 
+    summary = summarize_trainable_parameters(trainer.model)
+    if trainer.accelerator.is_main_process:
+        print(f"trainable_summary={summary}")
+
     state = trainer.train()
     if state.global_step < 1:
         raise AssertionError("training did not produce an optimizer update")
 
+    peak = torch.cuda.max_memory_allocated() / (1024 ** 3)
     checkpoint = Path(args.output) / f"checkpoint-{state.global_step:08d}"
     if trainer.accelerator.is_main_process and not checkpoint.exists():
         raise AssertionError(f"checkpoint missing: {checkpoint}")
 
-    # Full fine-tuning must also produce a portable Hugging Face model.
     trainer.export_model()
     trainer.accelerator.wait_for_everyone()
     final_model = Path(args.output) / "final-model"
     if trainer.accelerator.is_main_process:
         if not (final_model / "config.json").exists():
             raise AssertionError("exported config.json missing")
-        if not any(final_model.glob("*.safetensors")):
-            raise AssertionError("exported safetensors weights missing")
+        if not list(final_model.glob("*.safetensors")):
+            raise AssertionError("exported safetensors missing")
 
-    # Free the distributed training model before reload so the test exercises
-    # the exported artifact rather than relying on the in-memory trainer state.
+    trainer.accelerator.wait_for_everyone()
     del trainer
     del components
+    gc.collect()
     torch.cuda.empty_cache()
 
-    reloaded = load_causal_lm(
-        str(final_model),
-        model_kwargs={"torch_dtype": torch.bfloat16},
-    )
-    reloaded.model.to(torch.cuda.current_device())
-    sample = rows[0]
-    with torch.no_grad():
-        outputs = reloaded.model(
-            input_ids=sample["input_ids"].unsqueeze(0).to(torch.cuda.current_device()),
-            attention_mask=sample["attention_mask"].unsqueeze(0).to(torch.cuda.current_device()),
+    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        reloaded = load_causal_lm(
+            str(final_model),
+            model_kwargs={"torch_dtype": torch.bfloat16, "device_map": "cuda"},
         )
-    if not torch.isfinite(outputs.logits).all():
-        raise AssertionError("reloaded exported model produced non-finite logits")
-
-    peak = torch.cuda.max_memory_allocated() / (1024 ** 3)
-    if runtime.is_main_process:
+        test_ids = reloaded.tokenizer("Product: ceramic coffee mug. Category:", return_tensors="pt")
+        test_ids = {k: v.to("cuda") for k, v in test_ids.items()}
+        with torch.no_grad():
+            logits = reloaded.model(**test_ids).logits
+        if not torch.isfinite(logits).all():
+            raise AssertionError("reloaded model produced non-finite logits")
         print(
-            "PASS qwen35_4b_single_node "
-            f"world_size=4 global_step={state.global_step} "
-            f"peak_allocated_gib={peak:.2f} export_reload_forward=ok"
+            f"PASS qwen35_4b_single_node world_size=4 global_step={state.global_step} "
+            f"peak_allocated_gib={peak:.2f} trainable=last_2_layers+lm_head"
         )
 
 

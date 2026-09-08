@@ -5,13 +5,52 @@ from pathlib import Path
 from typing import Any
 
 from accelerate import Accelerator
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+)
 
 
 @dataclass
 class CausalLMComponents:
     model: PreTrainedModel
     tokenizer: PreTrainedTokenizerBase
+
+
+def _load_causal_lm_model(
+    model_name_or_path: str,
+    model_kwargs: dict[str, Any],
+) -> PreTrainedModel:
+    """Load a text-only causal LM, including Qwen3.5 checkpoints.
+
+    Qwen3.5 publishes a multimodal top-level checkpoint (``model_type=qwen3_5``)
+    while Transformers exposes ``Qwen3_5ForCausalLM`` for text-only use. A
+    previously exported text-only checkpoint may instead have
+    ``model_type=qwen3_5_text``. Route both forms through the text-only class so
+    training never needs an image processor or vision inputs.
+    """
+
+    config = AutoConfig.from_pretrained(model_name_or_path)
+    if getattr(config, "model_type", None) in {"qwen3_5", "qwen3_5_text"}:
+        try:
+            from transformers import Qwen3_5ForCausalLM
+        except ImportError as exc:
+            raise ImportError(
+                "Qwen3.5 text-only training requires a Transformers version "
+                "that provides Qwen3_5ForCausalLM"
+            ) from exc
+        return Qwen3_5ForCausalLM.from_pretrained(
+            model_name_or_path,
+            **model_kwargs,
+        )
+
+    return AutoModelForCausalLM.from_pretrained(
+        model_name_or_path,
+        **model_kwargs,
+    )
 
 
 def load_causal_lm(
@@ -21,7 +60,7 @@ def load_causal_lm(
     model_kwargs: dict[str, Any] | None = None,
     tokenizer_kwargs: dict[str, Any] | None = None,
 ) -> CausalLMComponents:
-    """Load a decoder-only Hugging Face model and its tokenizer."""
+    """Load a text-only Hugging Face causal LM and its tokenizer."""
 
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name_or_path or model_name_or_path,
@@ -32,9 +71,9 @@ def load_causal_lm(
             raise ValueError("Tokenizer must define either pad_token_id or eos_token_id")
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
+    model = _load_causal_lm_model(
         model_name_or_path,
-        **(model_kwargs or {}),
+        model_kwargs or {},
     )
     return CausalLMComponents(model=model, tokenizer=tokenizer)
 

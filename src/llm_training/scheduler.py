@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from torch.optim import Optimizer
@@ -39,9 +40,9 @@ def resolve_warmup_steps(
 ) -> int:
     """Resolve warmup in user-visible optimizer-step units.
 
-    Every public ``*_steps`` setting in llm-training is expressed in synchronized
-    optimizer updates. Backend-specific scheduler stepping is translated later
-    and never changes the meaning of ``SchedulerConfig.warmup_steps``.
+    Every public ``*_steps`` setting in llm-training means synchronized
+    optimizer updates. Backend-specific scheduler stepping never changes the
+    meaning of ``SchedulerConfig.warmup_steps``.
     """
     if num_training_steps <= 0:
         raise ValueError("num_training_steps must be > 0")
@@ -59,12 +60,7 @@ def build_scheduler(
     num_training_steps: int,
     scheduler_step_scale: int = 1,
 ) -> LRScheduler:
-    """Build a scheduler from optimizer-step semantics.
-
-    ``num_training_steps`` and configured warmup are optimizer updates.
-    ``scheduler_step_scale`` is an internal Accelerate/backend translation for
-    schedulers that advance more than once per synchronized optimizer update.
-    """
+    """Build a scheduler from optimizer-step semantics."""
     if scheduler_step_scale <= 0:
         raise ValueError("scheduler_step_scale must be > 0")
     warmup_steps = resolve_warmup_steps(
@@ -80,36 +76,59 @@ def build_scheduler(
     )
 
 
+def _environment_scheduler_step_scale() -> int:
+    raw = os.environ.get("WORLD_SIZE", "1")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 1
+
+
 def build_training_scheduler(
     optimizer: Any,
     config: TrainingConfig,
     *,
     num_training_steps: int,
-    scheduler_step_scale: int = 1,
+    scheduler_step_scale: int | None = None,
 ) -> Any:
     """Build the real scheduler or a DeepSpeed scheduler placeholder.
 
-    Public step counts remain optimizer updates; backend-specific scaling is
-    applied only to the underlying scheduler horizon.
+    ``Trainer`` currently passes the underlying Accelerate scheduler horizon,
+    which is optimizer updates multiplied by world size when
+    ``split_batches=False``. This function is the translation boundary: public
+    ``warmup_steps`` stays in optimizer-step units, then is scaled to the
+    underlying scheduler's units.
     """
+    scale = scheduler_step_scale or _environment_scheduler_step_scale()
+    if scale <= 0:
+        raise ValueError("scheduler_step_scale must be > 0")
+    if num_training_steps <= 0:
+        raise ValueError("num_training_steps must be > 0")
+    if num_training_steps % scale != 0:
+        raise ValueError(
+            "Internal scheduler horizon must be divisible by scheduler_step_scale"
+        )
+    optimizer_steps = num_training_steps // scale
+    warmup_optimizer_steps = resolve_warmup_steps(
+        config.scheduler,
+        num_training_steps=optimizer_steps,
+    )
+    warmup_scheduler_steps = warmup_optimizer_steps * scale
 
     ds = config.deepspeed
     if ds is None or ds.scheduler is None:
-        return build_scheduler(
-            optimizer,
-            config.scheduler,
+        return get_scheduler(
+            config.scheduler.name,
+            optimizer=optimizer,
+            num_warmup_steps=warmup_scheduler_steps,
             num_training_steps=num_training_steps,
-            scheduler_step_scale=scheduler_step_scale,
         )
 
-    if scheduler_step_scale <= 0:
-        raise ValueError("scheduler_step_scale must be > 0")
-    warmup_steps = resolve_warmup_steps(
-        config.scheduler,
-        num_training_steps=num_training_steps,
-    )
     scheduler_type = ds.scheduler.type.lower()
-    if scheduler_type in {"warmuplr", "warmupdecaylr"} and warmup_steps <= 0:
+    if (
+        scheduler_type in {"warmuplr", "warmupdecaylr"}
+        and warmup_optimizer_steps <= 0
+    ):
         raise ValueError(
             f"DeepSpeed {ds.scheduler.type} requires at least one warmup step; "
             "set scheduler.warmup_steps >= 1 or choose a warmup_ratio that "
@@ -120,6 +139,6 @@ def build_training_scheduler(
 
     return DummyScheduler(
         optimizer,
-        total_num_steps=num_training_steps * scheduler_step_scale,
-        warmup_num_steps=warmup_steps * scheduler_step_scale,
+        total_num_steps=num_training_steps,
+        warmup_num_steps=warmup_scheduler_steps,
     )

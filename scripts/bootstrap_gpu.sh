@@ -12,25 +12,28 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "ERROR: nvidia-smi is unavailable; use an NVIDIA GPU image/AMI" >&2
+  exit 1
+fi
+
 if command -v apt-get >/dev/null 2>&1; then
+  packages=()
   if ! "${PYTHON_BIN}" -m venv --help >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv
+    packages+=(python3-venv)
   fi
-  missing=()
-  for bin in git curl; do
-    if ! command -v "${bin}" >/dev/null 2>&1; then
-      missing+=("${bin}")
-    fi
-  done
-  if ((${#missing[@]})); then
+  command -v git >/dev/null 2>&1 || packages+=(git)
+  command -v curl >/dev/null 2>&1 || packages+=(curl)
+  command -v aws >/dev/null 2>&1 || packages+=(awscli)
+
+  if ((${#packages[@]})); then
     sudo apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
   fi
 fi
 
 if ! command -v aws >/dev/null 2>&1; then
-  echo "ERROR: aws CLI is required for --artifact-s3 runs; install AWS CLI on the image first." >&2
+  echo "ERROR: aws CLI is required for --artifact-s3 runs" >&2
   exit 1
 fi
 
@@ -66,4 +69,5 @@ print("Qwen3_5ForCausalLM import=PASS")
 PY
 
 echo "GPU bootstrap complete"
+echo "Repo root: ${REPO_ROOT}"
 echo "Use: ${VENV_DIR}/bin/torchrun ..."

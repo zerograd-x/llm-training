@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import warnings
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -78,11 +79,19 @@ def make_collate(tokenizer):
     return collate
 
 
-def sync_to_s3(local_dir: Path, s3_uri: str) -> None:
-    subprocess.run(
-        ["aws", "s3", "sync", str(local_dir), s3_uri.rstrip("/") + "/"],
-        check=True,
-    )
+def sync_to_s3(local_dir: Path, s3_uri: str) -> bool:
+    try:
+        subprocess.run(
+            ["aws", "s3", "sync", str(local_dir), s3_uri.rstrip("/") + "/"],
+            check=True,
+        )
+        return True
+    except (OSError, subprocess.CalledProcessError) as exc:
+        warnings.warn(
+            f"Artifact sync to {s3_uri} failed; local artifacts are preserved and training will continue: {exc}",
+            stacklevel=2,
+        )
+        return False
 
 
 class S3SyncTrainer(Trainer):

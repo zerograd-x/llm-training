@@ -58,25 +58,20 @@ from .trainer import Trainer
 from .evaluation import EvaluationMetric
 from .manifest import ArtifactManifest, write_artifact_manifest
 from .vocabulary import VocabularyResult, expand_vocabulary
-from .workflow import WorkflowResult, run_training_workflow
+from .training import TrainingResult, run_training
 
 __all__ = [
+    "ArtifactManifest",
     "BaseLoss",
     "CausalLMComponents",
     "CheckpointConfig",
-    "EvaluationConfig",
-    "EvaluationMetric",
-    "ArtifactManifest",
-    "VocabularyResult",
-    "WorkflowResult",
-    "expand_vocabulary",
-    "run_training_workflow",
-    "write_artifact_manifest",
     "DeepSpeedConfig",
     "DeepSpeedOptimizerConfig",
     "DeepSpeedSchedulerConfig",
     "DefaultCrossEntropyLoss",
     "DistributedRuntime",
+    "EvaluationConfig",
+    "EvaluationMetric",
     "FreezeConfig",
     "FreezeSummary",
     "GradientCheckpointingConfig",
@@ -91,12 +86,15 @@ __all__ = [
     "Trainer",
     "TrainerState",
     "TrainingConfig",
+    "TrainingResult",
+    "VocabularyResult",
     "active_world_size",
     "adapt_column_batch_collator",
     "adapt_model_for_training",
     "apply_freeze_policy",
     "discover_lora_target_modules",
     "discover_trainable_token_target_modules",
+    "expand_vocabulary",
     "find_embedding",
     "find_latest_checkpoint",
     "find_lm_head",
@@ -109,6 +107,7 @@ __all__ = [
     "require_single_process",
     "resolve_trainable_token_ids",
     "rows_to_column_batch",
+    "run_training",
     "save_causal_lm",
     "save_lora_adapter",
     "save_trainable_tokens_adapter",
@@ -116,4 +115,5 @@ __all__ = [
     "shift_causal_labels",
     "summarize_trainable_parameters",
     "weights_are_tied",
+    "write_artifact_manifest",
 ]

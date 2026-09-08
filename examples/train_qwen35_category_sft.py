@@ -142,6 +142,12 @@ def main() -> None:
         artifact_root_uri=args.artifact_s3_root,
     )
     if rank == 0:
+        output = Path(identity.output_dir)
+        if output.exists() and any(output.iterdir()):
+            raise ValueError(
+                "Qwen3.5 category SFT does not support in-place resume yet; "
+                f"use a new --output directory: {output}"
+            )
         write_run_identity(identity)
 
     components = load_causal_lm(

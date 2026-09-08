@@ -7,6 +7,51 @@
 
 Use `Trainer` for multi-GPU jobs. Use `run_training(...)` when you want a compact end-to-end local pipeline.
 
+## Inspect the effective plan before a run
+
+A training configuration is not useful by itself unless its runtime consequences are clear. `llm-training` can resolve the config into an effective execution plan before model loading:
+
+```bash
+python -m llm_training.inspect training_config.json \
+  --train-data train.jsonl \
+  --world-size 4 \
+  --model Qwen/Qwen3.5-4B \
+  --max-sequence-length 256 \
+  --has-eval-data
+```
+
+You can pass `--train-examples 50000` instead of a JSONL path. If the dataset size is omitted, model/backend/adaptation/output settings are still shown, but step-dependent fields remain unknown.
+
+The plan reports:
+
+- requested model, precision, backend, sequence-length ceiling, and gradient checkpointing;
+- effective adaptation policy and, when a model has already been adapted, exact trainable/total parameter counts;
+- per-device batch, world size, gradient accumulation, effective global batch, batches per rank, and optimizer steps;
+- warmup in user-visible optimizer steps plus the internal scheduler-step horizon used by Accelerate;
+- checkpoint cadence, expected distinct checkpoints, retention count, and evaluation points;
+- output location and warnings for configurations whose runtime consequences are easy to miss.
+
+Warnings currently include dominant warmup, final-checkpoint-only runs, a single validation point, no periodic loss line, an existing output directory without resume, ZeRO-3's full-model initial load, and gradient checkpointing on a small trainable fraction.
+
+`run_training(...)` prints the effective plan after the model adaptation policy has been applied, so its log contains the exact trainable parameter count. The Qwen3.5 category SFT example does the same before the first optimizer step.
+
+For programmatic inspection:
+
+```python
+from llm_training import build_training_plan, format_training_plan
+
+plan = build_training_plan(
+    config,
+    train_examples=len(train_dataset),
+    world_size=4,
+    model_name="Qwen/Qwen3.5-4B",
+    max_sequence_length=256,
+)
+print(format_training_plan(plan))
+```
+
+After constructing a `Trainer`, pass `trainer.adaptation_summary` to `build_training_plan(...)` to replace the requested adaptation description with the effective trainable parameter counts.
+
 ## Minimal direct training
 
 ```python

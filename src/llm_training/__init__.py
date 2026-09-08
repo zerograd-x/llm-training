@@ -40,6 +40,12 @@ from .distributed import (
     require_single_process,
 )
 from .freeze import FreezeSummary, apply_freeze_policy, summarize_trainable_parameters
+from .inspection import (
+    PlanWarning,
+    TrainingPlan,
+    build_training_plan,
+    format_training_plan,
+)
 from .loss import (
     IGNORE_INDEX,
     BaseLoss,
@@ -81,17 +87,20 @@ __all__ = [
     "MaterializationScope",
     "ModelAdaptationSummary",
     "OptimizerConfig",
+    "PlanWarning",
     "SchedulerConfig",
     "TrainableTokensConfig",
     "Trainer",
     "TrainerState",
     "TrainingConfig",
+    "TrainingPlan",
     "TrainingResult",
     "VocabularyResult",
     "active_world_size",
     "adapt_column_batch_collator",
     "adapt_model_for_training",
     "apply_freeze_policy",
+    "build_training_plan",
     "discover_lora_target_modules",
     "discover_trainable_token_target_modules",
     "expand_vocabulary",
@@ -99,6 +108,7 @@ __all__ = [
     "find_latest_checkpoint",
     "find_lm_head",
     "find_transformer_layers",
+    "format_training_plan",
     "load_causal_lm",
     "load_loss",
     "load_training_checkpoint",

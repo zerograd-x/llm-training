@@ -173,8 +173,8 @@ class Trainer:
         # batches to each process, then AcceleratedScheduler advances the
         # underlying scheduler ``num_processes`` times for every synchronized
         # optimizer update. Build the scheduler horizon in those underlying
-        # scheduler-step units. This also handles uneven final batch groups,
-        # where Accelerate pads/evenly repeats batches across ranks.
+        # scheduler-step units. Public step settings remain optimizer updates;
+        # build_training_scheduler translates them using scheduler_step_scale.
         batches_per_process = math.ceil(
             len(dataloader) / self.accelerator.num_processes
         )
@@ -187,6 +187,7 @@ class Trainer:
             optimizer,
             config,
             num_training_steps=total_training_steps,
+            scheduler_step_scale=self.accelerator.num_processes,
         )
 
         self.model, self.optimizer, self.train_dataloader, self.scheduler = (
@@ -265,8 +266,14 @@ class Trainer:
                     )
                     self.accelerator.backward(loss * (accumulation / window_size))
 
+                    # Under DeepSpeed, accelerator.backward() delegates the
+                    # accumulation-boundary step to DeepSpeedEngine, including
+                    # configured gradient clipping. Manual clipping here would
+                    # happen after that step and is therefore both redundant and
+                    # too late. Non-DeepSpeed runtimes clip explicitly here.
                     if (
-                        self.accelerator.sync_gradients
+                        self.config.deepspeed is None
+                        and self.accelerator.sync_gradients
                         and self.config.max_grad_norm is not None
                     ):
                         self.accelerator.clip_grad_norm_(

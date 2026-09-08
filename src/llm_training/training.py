@@ -13,6 +13,7 @@ import sys
 from . import config as configuration
 from .distributed import require_single_process
 from .manifest import ArtifactManifest
+from .run import resolve_run_identity, write_run_identity
 from .vocabulary import expand_vocabulary
 
 
@@ -23,6 +24,8 @@ class TrainingResult:
     adapter_path: str | None
     predictions_path: str | None
     evaluation: dict
+    run_id: str | None = None
+    artifact_uri: str | None = None
 
 
 def training_config_from_dict(value):
@@ -141,6 +144,8 @@ def run_training(
     system_prompt=None,
     inference_device="cpu",
     timeout=900,
+    run_id=None,
+    artifact_root_uri=None,
 ):
     """Train and export locally, with optional fresh-process generation.
 
@@ -148,6 +153,11 @@ def run_training(
     overlap is rejected by explicit id when present and by exact example
     content. This high-level runner uses one training process; use ``Trainer``
     and the distributed runtime directly for multi-rank launches.
+
+    ``run_id`` identifies this run across local metadata and durable publishing.
+    If omitted, a stable id is derived from the output directory. When
+    ``artifact_root_uri`` is supplied, the durable run URI is
+    ``artifact_root_uri/run_id/``.
     """
     require_single_process("run_training")
     config.validate()
@@ -191,6 +201,12 @@ def run_training(
     if root.exists() and any(root.iterdir()):
         raise ValueError("run_training requires a new output directory")
     root.mkdir(parents=True, exist_ok=True)
+    identity = resolve_run_identity(
+        root,
+        run_id=run_id,
+        artifact_root_uri=artifact_root_uri,
+    )
+    write_run_identity(identity)
     stage_dir = root / "stages"
     stage_dir.mkdir()
 
@@ -246,6 +262,7 @@ def run_training(
         system_prompt=system_prompt,
         max_new_tokens=max_new_tokens,
         inference_device=inference_device,
+        run_identity=asdict(identity),
     )
     request["config"]["output_dir"] = str(root)
     trained = _run_stage("train", request, stage_dir, timeout)
@@ -277,11 +294,13 @@ def run_training(
         evaluation["generation"] = generated["metrics"]
 
     result = TrainingResult(
-        model_path,
-        trained["checkpoint_path"],
-        trained["adapter_path"],
-        predictions_path,
-        evaluation,
+        model_path=model_path,
+        checkpoint_path=trained["checkpoint_path"],
+        adapter_path=trained["adapter_path"],
+        predictions_path=predictions_path,
+        evaluation=evaluation,
+        run_id=identity.run_id,
+        artifact_uri=identity.artifact_uri,
     )
     (root / "training-result.json").write_text(
         json.dumps(asdict(result), indent=2) + "\n"

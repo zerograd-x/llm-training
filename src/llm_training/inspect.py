@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from .inspection import build_training_plan, format_training_plan
+from .run import resolve_run_identity
 from .training import training_config_from_dict
 
 
@@ -32,6 +33,12 @@ def main() -> None:
     )
     parser.add_argument("--model", default=None, help="Model name/path for display")
     parser.add_argument("--max-sequence-length", type=int, default=None)
+    parser.add_argument("--run-id", default=None, help="Explicit durable run id")
+    parser.add_argument(
+        "--artifact-root-uri",
+        default=None,
+        help="Optional durable artifact root; run_id is appended automatically",
+    )
     parser.add_argument(
         "--has-eval-data",
         action="store_true",
@@ -47,6 +54,11 @@ def main() -> None:
 
     output = Path(config.output_dir)
     output_exists = output.exists() and any(output.iterdir())
+    identity = resolve_run_identity(
+        config.output_dir,
+        run_id=args.run_id,
+        artifact_root_uri=args.artifact_root_uri,
+    )
     plan = build_training_plan(
         config,
         train_examples=train_examples,
@@ -55,6 +67,7 @@ def main() -> None:
         max_sequence_length=args.max_sequence_length,
         has_eval_data=args.has_eval_data,
         output_exists=output_exists,
+        run_identity=identity,
     )
     print(format_training_plan(plan))
 

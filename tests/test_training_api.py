@@ -49,6 +49,8 @@ def test_training_lifecycle(tmp_path, mode):
         inference=True,
         max_new_tokens=2,
         max_sequence_length=32,
+        run_id="tiny-lifecycle",
+        artifact_root_uri="s3://bucket/runs",
     )
 
     manifest = ArtifactManifest.load(result.model_path).validate(
@@ -57,6 +59,8 @@ def test_training_lifecycle(tmp_path, mode):
     assert manifest.kind == "model"
     assert manifest.new_tokens == {"<new_a>": 12, "<new_b>": 13}
     assert (result.adapter_path is not None) == (mode != "full")
+    assert result.run_id == "tiny-lifecycle"
+    assert result.artifact_uri == "s3://bucket/runs/tiny-lifecycle/"
 
     predictions = [
         json.loads(line)
@@ -65,13 +69,22 @@ def test_training_lifecycle(tmp_path, mode):
     assert len(predictions) == 1
     assert predictions[0]["prompt"] == test[0]["prompt"]
 
-    stage_dir = Path(config.output_dir) / "stages"
+    run_dir = Path(config.output_dir)
+    run_metadata = json.loads((run_dir / "run.json").read_text())
+    plan = json.loads((run_dir / "training-plan.json").read_text())
+    assert run_metadata["run_id"] == "tiny-lifecycle"
+    assert run_metadata["artifact_uri"] == "s3://bucket/runs/tiny-lifecycle/"
+    assert plan["run_id"] == "tiny-lifecycle"
+    assert plan["optimizer_steps"] == 2
+    assert plan["optimizer_owner"] == "torch"
+
+    stage_dir = run_dir / "stages"
     records = [json.loads(path.read_text()) for path in stage_dir.glob("*-result.json")]
     assert records
     assert all(record["ok"] for record in records)
     assert len({record["pid"] for record in records}) == len(records)
     assert result.evaluation["validation"][-1]["eval_examples"] == 1
-    assert (Path(config.output_dir) / "training-result.json").is_file()
+    assert (run_dir / "training-result.json").is_file()
 
 
 def test_training_rejects_invalid_splits_before_model_loading(tmp_path):

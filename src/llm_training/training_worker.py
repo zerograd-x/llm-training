@@ -12,6 +12,7 @@ from .artifacts import merge_lora, merge_trainable_tokens
 from .checkpoint import find_latest_checkpoint
 from .data import adapt_column_batch_collator
 from .distributed import DistributedRuntime
+from .inspection import build_training_plan, format_training_plan
 from .manifest import ArtifactManifest, write_artifact_manifest
 from .trainer import Trainer
 from .training import training_config_from_dict
@@ -56,6 +57,16 @@ def run(stage, request):
             collate_fn=collate,
             config=config,
         )
+        plan = build_training_plan(
+            config,
+            train_examples=len(request["splits"]["train"]),
+            world_size=runtime.num_processes,
+            adaptation_summary=trainer.adaptation_summary,
+            model_name=str(base),
+            max_sequence_length=request["max_sequence_length"],
+            has_eval_data=request["splits"]["validation"] is not None,
+        )
+        trainer.accelerator.print(format_training_plan(plan))
         trainer.train()
         checkpoint = find_latest_checkpoint(root)
         write_artifact_manifest(

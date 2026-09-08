@@ -76,7 +76,7 @@ def main():
         freeze=FreezeConfig(
             train_last_n_layers=2,
             train_embeddings=False,
-            train_lm_head=True,
+            train_lm_head=False,
         ),
         optimizer=OptimizerConfig(learning_rate=1e-5, weight_decay=0.0),
         scheduler=SchedulerConfig(name="linear", warmup_ratio=0.0),
@@ -144,7 +144,7 @@ def main():
         print(
             f"PASS qwen35_4b_distributed_train_export world_size=4 "
             f"global_step={state.global_step} peak_allocated_gib={peak:.2f} "
-            "trainable=last_2_layers+lm_head"
+            "trainable=last_2_layers"
         )
 
 

@@ -19,7 +19,7 @@ fi
 
 if command -v apt-get >/dev/null 2>&1; then
   packages=()
-  if ! "${PYTHON_BIN}" -m venv --help >/dev/null 2>&1; then
+  if ! "${PYTHON_BIN}" -m ensurepip --version >/dev/null 2>&1; then
     packages+=(python3-venv)
   fi
   command -v git >/dev/null 2>&1 || packages+=(git)

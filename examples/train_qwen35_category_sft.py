@@ -23,6 +23,9 @@ from llm_training import (
     build_training_plan,
     format_training_plan,
     load_causal_lm,
+    resolve_run_identity,
+    save_training_plan,
+    write_run_identity,
 )
 
 
@@ -97,15 +100,15 @@ def sync_to_s3(local_dir: Path, s3_uri: str) -> bool:
 
 
 class S3SyncTrainer(Trainer):
-    def __init__(self, *args, artifact_s3: str | None = None, **kwargs):
+    def __init__(self, *args, artifact_uri: str | None = None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.artifact_s3 = artifact_s3
+        self.artifact_uri = artifact_uri
 
     def save_checkpoint(self) -> Path:
         checkpoint = super().save_checkpoint()
         self.accelerator.wait_for_everyone()
-        if self.artifact_s3 and self.accelerator.is_main_process:
-            sync_to_s3(Path(self.config.output_dir), self.artifact_s3)
+        if self.artifact_uri and self.accelerator.is_main_process:
+            sync_to_s3(Path(self.config.output_dir), self.artifact_uri)
         self.accelerator.wait_for_everyone()
         return checkpoint
 
@@ -115,7 +118,12 @@ def main() -> None:
     parser.add_argument("data", type=Path)
     parser.add_argument("--model", default="Qwen/Qwen3.5-4B")
     parser.add_argument("--output", type=Path, default=Path("./qwen35-4b-category-sft"))
-    parser.add_argument("--artifact-s3", default=None)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--artifact-s3-root",
+        default=None,
+        help="S3 root prefix; the resolved run id is appended automatically",
+    )
     parser.add_argument("--max-length", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--grad-accum", type=int, default=1)
@@ -124,8 +132,17 @@ def main() -> None:
     args = parser.parse_args()
 
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
     if world_size > 1 and not torch.cuda.is_available():
         raise RuntimeError("Distributed Qwen3.5 SFT requires CUDA")
+
+    identity = resolve_run_identity(
+        args.output,
+        run_id=args.run_id,
+        artifact_root_uri=args.artifact_s3_root,
+    )
+    if rank == 0:
+        write_run_identity(identity)
 
     components = load_causal_lm(
         args.model,
@@ -134,7 +151,7 @@ def main() -> None:
     dataset = CategoryRows(args.data, components.tokenizer, args.max_length)
 
     config = TrainingConfig(
-        output_dir=str(args.output),
+        output_dir=identity.output_dir,
         num_epochs=args.epochs,
         per_device_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
@@ -160,7 +177,7 @@ def main() -> None:
         train_dataset=dataset,
         collate_fn=make_collate(components.tokenizer),
         config=config,
-        artifact_s3=args.artifact_s3,
+        artifact_uri=identity.artifact_uri,
     )
     plan = build_training_plan(
         config,
@@ -169,21 +186,26 @@ def main() -> None:
         adaptation_summary=trainer.adaptation_summary,
         model_name=args.model,
         max_sequence_length=args.max_length,
+        run_identity=identity,
     )
     trainer.accelerator.print(format_training_plan(plan))
+    if trainer.accelerator.is_main_process:
+        save_training_plan(plan, identity.output_dir)
+    trainer.accelerator.wait_for_everyone()
 
     state = trainer.train()
     trainer.export_model()
     trainer.accelerator.wait_for_everyone()
 
-    if args.artifact_s3 and trainer.accelerator.is_main_process:
-        sync_to_s3(args.output, args.artifact_s3)
+    if identity.artifact_uri and trainer.accelerator.is_main_process:
+        sync_to_s3(Path(identity.output_dir), identity.artifact_uri)
     trainer.accelerator.wait_for_everyone()
 
     if trainer.accelerator.is_main_process:
         peak_gib = torch.cuda.max_memory_allocated() / (1024 ** 3)
         print(
-            f"Qwen3.5-4B SFT complete: world_size={trainer.accelerator.num_processes} "
+            f"Qwen3.5-4B SFT complete: run_id={identity.run_id} "
+            f"world_size={trainer.accelerator.num_processes} "
             f"global_step={state.global_step} peak_allocated_gib={peak_gib:.2f} "
             "trainable=last_2_layers dynamic_padding=true"
         )

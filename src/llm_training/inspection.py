@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import json
 import math
+from pathlib import Path
 
 from .adapters import ModelAdaptationSummary
+from .backend import build_deepspeed_config
 from .config import TrainingConfig
+from .run import RunIdentity
 from .scheduler import resolve_warmup_steps
 
 
@@ -16,6 +20,8 @@ class PlanWarning:
 
 @dataclass(frozen=True)
 class TrainingPlan:
+    run_id: str | None
+    artifact_uri: str | None
     model_name: str | None
     max_sequence_length: int | None
     train_examples: int | None
@@ -34,13 +40,28 @@ class TrainingPlan:
     retained_checkpoints: int | None
     evaluation_events: int | None
     output_dir: str
-    deepspeed_stage: int | None
     mixed_precision: str
     gradient_checkpointing: bool
     adaptation_method: str
     trainable_parameters: int | None
     total_parameters: int | None
     trainable_fraction: float | None
+    optimizer_owner: str
+    optimizer_type: str
+    learning_rate: float
+    weight_decay: float
+    beta1: float
+    beta2: float
+    eps: float
+    scheduler_owner: str
+    scheduler_type: str
+    max_grad_norm: float | None
+    gradient_clip_owner: str | None
+    deepspeed_stage: int | None
+    offload_optimizer_device: str | None
+    offload_param_device: str | None
+    zero3_save_16bit_model: bool | None
+    effective_deepspeed_config: dict | None
     warnings: tuple[PlanWarning, ...]
 
 
@@ -81,15 +102,9 @@ def build_training_plan(
     max_sequence_length: int | None = None,
     has_eval_data: bool = False,
     output_exists: bool = False,
+    run_identity: RunIdentity | None = None,
 ) -> TrainingPlan:
-    """Resolve configured knobs into the effective training execution plan.
-
-    The step arithmetic deliberately mirrors ``Trainer``. Accelerate's default
-    ``split_batches=False`` assigns complete dataloader batches to ranks and its
-    scheduler wrapper advances the underlying scheduler once per process for
-    every synchronized optimizer update. ``scheduler_steps`` therefore differs
-    from user-visible optimizer steps when ``world_size > 1``.
-    """
+    """Resolve requested knobs into the effective training execution plan."""
     config.validate()
     if world_size <= 0:
         raise ValueError("world_size must be > 0")
@@ -115,21 +130,18 @@ def build_training_plan(
     evaluation_events = None
 
     if train_examples is not None:
-        dataloader_batches = math.ceil(
-            train_examples / config.per_device_batch_size
-        )
+        dataloader_batches = math.ceil(train_examples / config.per_device_batch_size)
         batches_per_rank = math.ceil(dataloader_batches / world_size)
         updates_per_epoch = math.ceil(
             batches_per_rank / config.gradient_accumulation_steps
         )
         optimizer_steps = updates_per_epoch * config.num_epochs
         scheduler_steps = optimizer_steps * world_size
-        warmup_scheduler_steps = resolve_warmup_steps(
+        warmup_optimizer_steps = resolve_warmup_steps(
             config.scheduler,
-            num_training_steps=scheduler_steps,
+            num_training_steps=optimizer_steps,
         )
-        warmup_optimizer_steps = math.ceil(warmup_scheduler_steps / world_size)
-        warmup_fraction = warmup_scheduler_steps / scheduler_steps
+        warmup_fraction = warmup_optimizer_steps / optimizer_steps
 
         save_every = config.checkpoint.save_every_steps
         if save_every is None:
@@ -137,15 +149,12 @@ def build_training_plan(
         else:
             periodic = optimizer_steps // save_every
             final_is_new_step = optimizer_steps % save_every != 0
-            expected_checkpoints = periodic + int(final_is_new_step)
-            expected_checkpoints = max(expected_checkpoints, 1)
-        if config.checkpoint.keep_last is None:
-            retained_checkpoints = expected_checkpoints
-        else:
-            retained_checkpoints = min(
-                expected_checkpoints,
-                config.checkpoint.keep_last,
-            )
+            expected_checkpoints = max(periodic + int(final_is_new_step), 1)
+        retained_checkpoints = (
+            expected_checkpoints
+            if config.checkpoint.keep_last is None
+            else min(expected_checkpoints, config.checkpoint.keep_last)
+        )
 
         if has_eval_data:
             eval_steps: set[int] = set()
@@ -179,6 +188,16 @@ def build_training_plan(
         total_parameters = adaptation_summary.total_parameters
         trainable_fraction = adaptation_summary.trainable_fraction
 
+    ds = config.deepspeed
+    optimizer_owner = "deepspeed" if ds is not None and ds.optimizer is not None else "torch"
+    optimizer_type = ds.optimizer.type if optimizer_owner == "deepspeed" else "AdamW"
+    scheduler_owner = "deepspeed" if ds is not None and ds.scheduler is not None else "torch/hf"
+    scheduler_type = ds.scheduler.type if scheduler_owner == "deepspeed" else config.scheduler.name
+    gradient_clip_owner = None
+    if config.max_grad_norm is not None:
+        gradient_clip_owner = "deepspeed" if ds is not None else "accelerate"
+    effective_ds = build_deepspeed_config(config) if ds is not None else None
+
     warnings: list[PlanWarning] = []
     if train_examples is None:
         warnings.append(
@@ -194,7 +213,7 @@ def build_training_plan(
                 "The output directory already contains files and no resume checkpoint is configured; use a new run directory to avoid artifact collisions.",
             )
         )
-    if config.deepspeed is not None and config.deepspeed.zero_stage == 3:
+    if ds is not None and ds.zero_stage == 3:
         warnings.append(
             PlanWarning(
                 "zero3_initial_load_unpartitioned",
@@ -205,7 +224,7 @@ def build_training_plan(
         warnings.append(
             PlanWarning(
                 "warmup_dominates_training",
-                f"Warmup covers {warmup_fraction:.0%} of the scheduler horizon; verify this is intentional.",
+                f"Warmup covers {warmup_fraction:.0%} of optimizer updates; verify this is intentional.",
             )
         )
     if optimizer_steps is not None and optimizer_steps > 1 and expected_checkpoints == 1:
@@ -240,8 +259,17 @@ def build_training_plan(
                 f"Only {adaptation_summary.trainable_fraction:.1%} of parameters are trainable while gradient checkpointing is enabled; measure whether recomputation is still worthwhile.",
             )
         )
+    if ds is not None and ds.offload_param_device != "none" and ds.zero_stage == 3:
+        warnings.append(
+            PlanWarning(
+                "zero3_load_not_offloaded",
+                "Parameter offload applies after DeepSpeed preparation; it does not reduce the current full-model from_pretrained() materialization requirement.",
+            )
+        )
 
     return TrainingPlan(
+        run_id=run_identity.run_id if run_identity else None,
+        artifact_uri=run_identity.artifact_uri if run_identity else None,
         model_name=model_name,
         max_sequence_length=max_sequence_length,
         train_examples=train_examples,
@@ -260,15 +288,41 @@ def build_training_plan(
         retained_checkpoints=retained_checkpoints,
         evaluation_events=evaluation_events,
         output_dir=config.output_dir,
-        deepspeed_stage=(config.deepspeed.zero_stage if config.deepspeed else None),
         mixed_precision=config.mixed_precision,
         gradient_checkpointing=config.gradient_checkpointing.enabled,
         adaptation_method=adaptation_method,
         trainable_parameters=trainable_parameters,
         total_parameters=total_parameters,
         trainable_fraction=trainable_fraction,
+        optimizer_owner=optimizer_owner,
+        optimizer_type=optimizer_type,
+        learning_rate=config.optimizer.learning_rate,
+        weight_decay=config.optimizer.weight_decay,
+        beta1=config.optimizer.beta1,
+        beta2=config.optimizer.beta2,
+        eps=config.optimizer.eps,
+        scheduler_owner=scheduler_owner,
+        scheduler_type=scheduler_type,
+        max_grad_norm=config.max_grad_norm,
+        gradient_clip_owner=gradient_clip_owner,
+        deepspeed_stage=ds.zero_stage if ds else None,
+        offload_optimizer_device=ds.offload_optimizer_device if ds else None,
+        offload_param_device=ds.offload_param_device if ds else None,
+        zero3_save_16bit_model=ds.zero3_save_16bit_model if ds else None,
+        effective_deepspeed_config=effective_ds,
         warnings=tuple(warnings),
     )
+
+
+def save_training_plan(plan: TrainingPlan, output_dir: str | Path | None = None) -> Path:
+    """Persist the effective plan as machine-readable run metadata."""
+    root = Path(output_dir or plan.output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "training-plan.json"
+    temporary = root / "training-plan.tmp"
+    temporary.write_text(json.dumps(asdict(plan), indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)
+    return path
 
 
 def _value(value) -> str:
@@ -288,7 +342,7 @@ def _params(value: int | None) -> str:
 
 
 def format_training_plan(plan: TrainingPlan) -> str:
-    """Render a compact, stable human-readable execution plan."""
+    """Render a compact human-readable execution plan."""
     backend = (
         f"DeepSpeed ZeRO-{plan.deepspeed_stage}"
         if plan.deepspeed_stage is not None
@@ -300,7 +354,7 @@ def format_training_plan(plan: TrainingPlan) -> str:
     checkpoint_every = (
         "final only"
         if plan.checkpoint_every_steps is None
-        else f"every {plan.checkpoint_every_steps} steps"
+        else f"every {plan.checkpoint_every_steps} optimizer steps"
     )
     trainable = _params(plan.trainable_parameters)
     if plan.trainable_fraction is not None:
@@ -308,6 +362,11 @@ def format_training_plan(plan: TrainingPlan) -> str:
 
     lines = [
         "EFFECTIVE TRAINING PLAN",
+        "",
+        "RUN",
+        f"  run id: {plan.run_id or 'not provided'}",
+        f"  output: {plan.output_dir}",
+        f"  artifact uri: {plan.artifact_uri or 'not configured'}",
         "",
         "MODEL",
         f"  model: {plan.model_name or 'not provided'}",
@@ -330,9 +389,26 @@ def format_training_plan(plan: TrainingPlan) -> str:
         f"  optimizer steps/epoch: {_value(plan.optimizer_steps_per_epoch)}",
         f"  total optimizer steps: {_value(plan.optimizer_steps)}",
         "",
-        "SCHEDULE",
-        f"  warmup: {warmup}",
+        "OPTIMIZER",
+        f"  owner: {plan.optimizer_owner}",
+        f"  type: {plan.optimizer_type}",
+        f"  learning rate: {plan.learning_rate}",
+        f"  betas: ({plan.beta1}, {plan.beta2})",
+        f"  eps: {plan.eps}",
+        f"  weight decay: {plan.weight_decay}",
+        f"  gradient clip: {_value(plan.max_grad_norm)} ({plan.gradient_clip_owner or 'disabled'})",
+        "",
+        "SCHEDULER",
+        f"  owner: {plan.scheduler_owner}",
+        f"  type: {plan.scheduler_type}",
+        f"  warmup optimizer steps: {warmup}",
         f"  internal scheduler steps: {_value(plan.scheduler_steps)}",
+        "",
+        "DEEPSPEED",
+        f"  stage: {_value(plan.deepspeed_stage)}",
+        f"  optimizer offload: {_value(plan.offload_optimizer_device)}",
+        f"  parameter offload: {_value(plan.offload_param_device)}",
+        f"  gather/save 16-bit model: {_value(plan.zero3_save_16bit_model)}",
         "",
         "CHECKPOINTS",
         f"  cadence: {checkpoint_every}",
@@ -342,10 +418,8 @@ def format_training_plan(plan: TrainingPlan) -> str:
         "EVALUATION",
         f"  expected evaluation points: {_value(plan.evaluation_events)}",
         "",
-        "OUTPUT",
-        f"  directory: {plan.output_dir}",
+        "WARNINGS",
     ]
-    lines.extend(["", "WARNINGS"])
     if not plan.warnings:
         lines.append("  none")
     else:

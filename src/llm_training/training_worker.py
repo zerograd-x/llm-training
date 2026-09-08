@@ -12,8 +12,9 @@ from .artifacts import merge_lora, merge_trainable_tokens
 from .checkpoint import find_latest_checkpoint
 from .data import adapt_column_batch_collator
 from .distributed import DistributedRuntime
-from .inspection import build_training_plan, format_training_plan
+from .inspection import build_training_plan, format_training_plan, save_training_plan
 from .manifest import ArtifactManifest, write_artifact_manifest
+from .run import RunIdentity, write_run_identity
 from .trainer import Trainer
 from .training import training_config_from_dict
 
@@ -22,6 +23,8 @@ def run(stage, request):
     config = training_config_from_dict(request["config"])
     root = Path(config.output_dir)
     base = request["base_path"]
+    identity = RunIdentity(**request["run_identity"])
+    write_run_identity(identity)
     kwargs = dict(
         base_path=base,
         new_tokens=request["new_tokens"],
@@ -65,8 +68,12 @@ def run(stage, request):
             model_name=str(base),
             max_sequence_length=request["max_sequence_length"],
             has_eval_data=request["splits"]["validation"] is not None,
+            run_identity=identity,
         )
         trainer.accelerator.print(format_training_plan(plan))
+        if trainer.accelerator.is_main_process:
+            save_training_plan(plan, root)
+        trainer.accelerator.wait_for_everyone()
         trainer.train()
         checkpoint = find_latest_checkpoint(root)
         write_artifact_manifest(
@@ -93,6 +100,8 @@ def run(stage, request):
             device=str(runtime.accelerator.device),
             world_size=runtime.num_processes,
             mixed_precision=config.mixed_precision,
+            run_id=identity.run_id,
+            artifact_uri=identity.artifact_uri,
         )
 
     if stage == "merge":

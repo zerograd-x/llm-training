@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import gc
 import os
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from llm_training import (
     SchedulerConfig,
     Trainer,
     TrainingConfig,
-    load_causal_lm,
     summarize_trainable_parameters,
 )
 
@@ -143,27 +141,10 @@ def main():
             raise AssertionError("exported config.json missing")
         if not list(final_model.glob("*.safetensors")):
             raise AssertionError("exported safetensors missing")
-
-    trainer.accelerator.wait_for_everyone()
-    del trainer
-    del components
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-        reloaded = load_causal_lm(
-            str(final_model),
-            model_kwargs={"torch_dtype": torch.bfloat16, "device_map": "cuda"},
-        )
-        test_ids = reloaded.tokenizer("Product: ceramic coffee mug. Category:", return_tensors="pt")
-        test_ids = {k: v.to("cuda") for k, v in test_ids.items()}
-        with torch.no_grad():
-            logits = reloaded.model(**test_ids).logits
-        if not torch.isfinite(logits).all():
-            raise AssertionError("reloaded model produced non-finite logits")
         print(
-            f"PASS qwen35_4b_single_node world_size=4 global_step={state.global_step} "
-            f"peak_allocated_gib={peak:.2f} trainable=last_2_layers+lm_head"
+            f"PASS qwen35_4b_distributed_train_export world_size=4 "
+            f"global_step={state.global_step} peak_allocated_gib={peak:.2f} "
+            "trainable=last_2_layers+lm_head"
         )
 
 

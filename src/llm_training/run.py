@@ -61,6 +61,11 @@ def write_run_identity(identity: RunIdentity) -> Path:
                 f"Output directory already belongs to a different run: {path}"
             )
         return path
+    if any(root.iterdir()):
+        raise ValueError(
+            "Refusing to attach a new run identity to a non-empty output directory "
+            f"without run.json: {root}"
+        )
     temporary = root / "run.tmp"
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     temporary.replace(path)

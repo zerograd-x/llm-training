@@ -20,6 +20,8 @@ from llm_training import (
     SchedulerConfig,
     Trainer,
     TrainingConfig,
+    build_training_plan,
+    format_training_plan,
     load_causal_lm,
 )
 
@@ -160,6 +162,16 @@ def main() -> None:
         config=config,
         artifact_s3=args.artifact_s3,
     )
+    plan = build_training_plan(
+        config,
+        train_examples=len(dataset),
+        world_size=trainer.accelerator.num_processes,
+        adaptation_summary=trainer.adaptation_summary,
+        model_name=args.model,
+        max_sequence_length=args.max_length,
+    )
+    trainer.accelerator.print(format_training_plan(plan))
+
     state = trainer.train()
     trainer.export_model()
     trainer.accelerator.wait_for_everyone()

@@ -1,58 +1,26 @@
 # DeepSpeed backend
 
-`llm-training` treats DeepSpeed as a training backend with explicit ownership for optimization components.
+`llm-training` treats DeepSpeed as a backend, not as a second source of training hyperparameters.
 
-## Install
+## Optimizer and scheduler ownership
 
-```bash
-pip install -e ".[deepspeed]"
-```
-
-## ZeRO stages
+The common optimizer settings always live in `OptimizerConfig`:
 
 ```python
-from llm_training import DeepSpeedConfig, TrainingConfig
-
-config = TrainingConfig(
-    output_dir="./outputs",
-    mixed_precision="bf16",
-    deepspeed=DeepSpeedConfig(zero_stage=3),
+OptimizerConfig(
+    learning_rate=2e-5,
+    weight_decay=0.1,
+    beta1=0.9,
+    beta2=0.95,
+    eps=1e-8,
 )
 ```
 
-The current backend surface supports ZeRO stages 1, 2, and 3.
+With `DeepSpeedConfig(zero_stage=...)` alone, `llm-training` constructs the Torch optimizer and Hugging Face scheduler, then DeepSpeed prepares/wraps them during `accelerator.prepare(...)`.
 
-By default, enabling DeepSpeed does **not** replace the optimizer or scheduler. The normal `OptimizerConfig` and `SchedulerConfig` still create the real PyTorch/Hugging Face objects, and DeepSpeed wraps/partitions their runtime state during `accelerator.prepare(...)`.
-
-```text
-OptimizerConfig + SchedulerConfig
-             |
-             v
-      torch optimizer/scheduler
-             |
-             v
-      accelerator.prepare(...)
-             |
-       +-----+------+
-       |            |
-   standard      DeepSpeed
-                 ZeRO 1/2/3
-```
-
-## Explicit DeepSpeed-owned optimizer and scheduler
-
-DeepSpeed ownership is opt-in. Adding an optimizer and scheduler under `DeepSpeedConfig` switches those components to DeepSpeed-managed implementations:
+To let DeepSpeed create the optimizer and scheduler, opt in explicitly:
 
 ```python
-from llm_training import (
-    DeepSpeedConfig,
-    DeepSpeedOptimizerConfig,
-    DeepSpeedSchedulerConfig,
-    OptimizerConfig,
-    SchedulerConfig,
-    TrainingConfig,
-)
-
 config = TrainingConfig(
     output_dir="./outputs",
     optimizer=OptimizerConfig(
@@ -62,9 +30,7 @@ config = TrainingConfig(
         beta2=0.95,
         eps=1e-8,
     ),
-    scheduler=SchedulerConfig(
-        warmup_ratio=0.03,
-    ),
+    scheduler=SchedulerConfig(warmup_ratio=0.03),
     deepspeed=DeepSpeedConfig(
         zero_stage=3,
         optimizer=DeepSpeedOptimizerConfig(
@@ -79,178 +45,155 @@ config = TrainingConfig(
 )
 ```
 
-The runtime then uses:
+`DeepSpeedOptimizerConfig.params` may contain backend-specific options, but it cannot override shared `lr`, `weight_decay`, `betas`, or `eps`. Likewise, DeepSpeed scheduler params cannot override the shared warmup or total-step values. This keeps one source of truth.
 
-```text
-DeepSpeed optimizer config
-        -> DummyOptim
-        -> accelerator.prepare(...)
-        -> DeepSpeed creates the real optimizer
-
-DeepSpeed scheduler config
-        -> DummyScheduler
-        -> accelerator.prepare(...)
-        -> DeepSpeed creates the real scheduler
-```
-
-Common hyperparameters keep one source of truth. Learning rate, weight decay, Adam betas, and epsilon come from `OptimizerConfig`; warmup length and total training steps come from `SchedulerConfig` plus the trainer's computed training length. DeepSpeed-specific `params` may add backend-specific options but may not override those shared fields.
-
-For data-parallel runs with the current Accelerate default `split_batches=False`, each rank receives `ceil(unsharded_batches / world_size)` batches. The trainer first computes synchronized optimizer updates from that per-rank length and gradient accumulation, then expresses the scheduler horizon in the underlying scheduler-step units expected by Accelerate. `AcceleratedScheduler` advances a Torch/HF scheduler `world_size` times per synchronized optimizer update in this mode, so the horizon is `optimizer_updates * world_size`. This also handles uneven final batch groups correctly.
-
-DeepSpeed `WarmupLR` and `WarmupDecayLR` require at least one warmup step. The runtime rejects a resolved warmup of zero before entering DeepSpeed rather than silently changing the requested schedule.
-
-The supported ownership combinations are:
+Supported ownership combinations:
 
 | Optimizer | Scheduler | Status |
 | --- | --- | --- |
-| Torch | Torch/HF | supported; default |
-| Torch | DeepSpeed | supported |
-| DeepSpeed | DeepSpeed | supported |
-| DeepSpeed | Torch/HF | not yet supported |
+| Torch-configured | Torch/HF-configured | supported; default |
+| Torch-configured | DeepSpeed-owned | supported |
+| DeepSpeed-owned | DeepSpeed-owned | supported |
+| DeepSpeed-owned | Torch/HF-configured | not yet supported |
 
-The last combination requires deferred construction of a Torch/HF scheduler after DeepSpeed creates the real optimizer. It can be added later through `DummyScheduler(..., lr_scheduler_callable=...)` without changing the public configuration model.
+The effective training plan reports both configuration ownership and backend preparation, for example `torch-configured / deepspeed-prepared`.
 
-## Offload
+## Step semantics
 
-Optimizer offload is available with ZeRO stage 2 or 3. Parameter offload is available only with ZeRO stage 3.
+Every public `*_steps` setting means **synchronized optimizer updates**:
+
+- `scheduler.warmup_steps`
+- `checkpoint.save_every_steps`
+- `evaluation.every_steps`
+- `log_every_steps`
+
+This meaning does not change with world size.
+
+Accelerate's underlying scheduler may advance more than once for one optimizer update when `split_batches=False`. `llm-training` translates optimizer-step counts to those internal scheduler ticks at the backend boundary. For example, with four ranks:
+
+```text
+warmup_steps = 100          # user meaning: 100 optimizer updates
+internal scheduler warmup = 400 ticks
+```
+
+`warmup_ratio` is also resolved against the optimizer-update horizon before backend scaling.
+
+## Batch size
+
+`TrainingConfig` is the only source for batch accounting:
 
 ```python
-config = TrainingConfig(
-    output_dir="./outputs",
-    deepspeed=DeepSpeedConfig(
-        zero_stage=3,
-        offload_optimizer_device="cpu",
-        offload_param_device="cpu",
-    ),
+per_device_batch_size=8
+gradient_accumulation_steps=1
+```
+
+The effective global batch is:
+
+```text
+per-device batch × gradient accumulation × world size
+```
+
+DeepSpeed receives:
+
+```json
+{
+  "train_micro_batch_size_per_gpu": "auto",
+  "train_batch_size": "auto"
+}
+```
+
+so users do not have to repeat the same micro-batch size in two configs.
+
+## ZeRO and offload
+
+```python
+DeepSpeedConfig(
+    zero_stage=3,
+    offload_optimizer_device="none",
+    offload_param_device="none",
+    zero3_save_16bit_model=True,
 )
 ```
 
-NVMe offload requires the corresponding path to be configured explicitly.
+Supported rules:
+
+- ZeRO-1/2/3 are supported.
+- optimizer offload requires ZeRO-2 or ZeRO-3.
+- parameter offload requires ZeRO-3.
+- NVMe offload requires an explicit NVMe path.
+
+The generated DeepSpeed config is included in `training-plan.json`, so the exact effective backend settings remain available after the run.
+
+## Gradient clipping
+
+`TrainingConfig.max_grad_norm` remains the single user-facing clipping setting.
+
+Without DeepSpeed, `Trainer` performs clipping through Accelerate before the optimizer update.
+
+With DeepSpeed, the value is translated to DeepSpeed's `gradient_clipping`, and the DeepSpeed engine owns clipping as part of its engine step. `Trainer` does not issue a second manual clip on the DeepSpeed path.
+
+```text
+non-DeepSpeed:
+backward -> accelerator.clip_grad_norm_ -> optimizer.step
+
+DeepSpeed:
+backward -> DeepSpeed engine step
+              ├─ gradient clipping
+              ├─ optimizer update
+              └─ scheduler update
+```
+
+The effective plan reports the clipping owner explicitly.
 
 ## Gradient checkpointing
 
-Gradient checkpointing is configured independently from DeepSpeed:
+Gradient checkpointing is independent of DeepSpeed:
 
 ```python
-from llm_training import GradientCheckpointingConfig, TrainingConfig
-
-config = TrainingConfig(
-    output_dir="./outputs",
-    gradient_checkpointing=GradientCheckpointingConfig(
-        enabled=True,
-        use_reentrant=False,
-    ),
+GradientCheckpointingConfig(
+    enabled=True,
+    use_reentrant=False,
 )
 ```
 
-When enabled, the runtime disables `model.config.use_cache` when that field exists and calls the model's native `gradient_checkpointing_enable()` before backend preparation.
+When enabled, the runtime disables `model.config.use_cache` when available and calls the model's native `gradient_checkpointing_enable()` before backend preparation.
 
-`use_reentrant=None` leaves the choice to the model implementation. Setting it explicitly requires a model implementation that accepts `gradient_checkpointing_kwargs`.
+For a run that trains only a small fraction of the model, the effective plan warns that gradient checkpointing may cost more recomputation than it saves; this is a performance warning, not a correctness error.
 
-## Distributed lifecycle before model loading
+## ZeRO-3 model-loading limitation
 
-For distributed jobs, construct `DistributedRuntime` before loading the model:
-
-```python
-from llm_training import DistributedRuntime
-
-runtime = DistributedRuntime(config)
-components = runtime.load_causal_lm(model_name_or_path)
-
-trainer = Trainer(
-    ...,
-    config=config,
-    runtime=runtime,
-)
-```
-
-The runtime owns one Accelerator/process-group instance for the whole worker lifecycle. Local rank 0 is allowed to populate the node-local Hugging Face cache before sibling ranks enter `from_pretrained(...)`; all ranks still construct their own model object. `Trainer` reuses the same Accelerator rather than creating a second distributed runtime.
-
-For model/cache materialization from local or shared storage, use `runtime.materialize_path(...)` with `scope="local"` for node-local disks or `scope="global"` for a filesystem visible to every node. See [`distributed-runtime.md`](distributed-runtime.md).
-
-## ZeRO-3 model loading limitation
-
-The earlier lifecycle problem—rank identity not existing until after model loading—has been removed by `DistributedRuntime`: the backend/process group can now exist before `from_pretrained()`.
-
-However, **ZeRO-3 initialization-time parameter partitioning is still not enabled**. The plugin uses `zero3_init_flag=False`, and `runtime.load_causal_lm(...)` explicitly suspends the Transformers ZeRO-3 loading hook. Accelerate 1.14.0 registers this hook even when that flag is false; without the loading context, loading after runtime creation can partition weights before LoRA/TrainableTokens adaptation and break shape discovery. The runtime restores the hook immediately after loading, including on exceptions, so PEFT collectives and backend preparation retain their DeepSpeed configuration. The lifecycle is:
+`DistributedRuntime` exists before model loading, but true ZeRO-3 initialization-time partitioning is still disabled. The current lifecycle is:
 
 ```text
 DistributedRuntime
     -> Accelerator + DeepSpeedPlugin
-    -> local-main-first model/cache resolution
-    -> every rank from_pretrained() materializes its model object
-    -> Trainer(..., runtime=runtime)
+    -> each rank loads a complete model
+    -> Trainer applies freeze/PEFT policy
     -> accelerator.prepare(...)
-    -> ZeRO-3 partitions parameters
+    -> ZeRO-3 partitions parameters/state
 ```
 
-Therefore a large model may still need enough host/device memory to be materialized before ZeRO-3 takes ownership. Moving the backend earlier was a prerequisite for future init-time partitioning, but it does not by itself make `from_pretrained()` ZeRO-3-sharded.
+Therefore ZeRO-3 reduces persistent training-state memory but does not yet remove the full-model-per-rank materialization requirement during `from_pretrained()`.
 
-Supporting true initialization-time partitioning requires a separate loading path that enters the appropriate DeepSpeed/Transformers initialization context during model construction and is validated on real multi-GPU hardware.
+Parameter offload also starts after DeepSpeed preparation, so it does not solve this initial-load requirement. Both limitations are surfaced in the effective training plan.
 
-For custom model construction after creating the runtime, use the same context:
+## Checkpoint and export ownership
 
-```python
-with runtime.model_loading_context():
-    model = AutoModelForCausalLM.from_pretrained(model_path)
-trainer = Trainer(model=model, config=config, runtime=runtime,
-                  train_dataset=train_dataset, collate_fn=collate_fn)
+Checkpointing is collective under DeepSpeed because ranks may own different parameter, gradient, and optimizer shards. All ranks participate in `accelerator.save_state(...)`; rank 0 writes small logical metadata after the collective save.
+
+Distributed full-model export uses `accelerator.get_state_dict(model)` before Hugging Face `save_pretrained(...)`, so ZeRO-3 shards are gathered through the backend rather than assuming every rank already has a full state dict.
+
+LoRA and TrainableTokens merges are single-process operations after distributed training exits.
+
+## Inspect the exact settings
+
+Before a run:
+
+```bash
+python -m llm_training.inspect training_config.json \
+  --train-examples 50000 \
+  --world-size 4 \
+  --model Qwen/Qwen3.5-4B
 ```
 
-This context temporarily changes Transformers' process-global loading state;
-do not concurrently load another model on a different thread inside it.
-
-## Checkpoint and artifact ownership
-
-Training-state checkpointing is a collective/backend operation. Under ZeRO, every participating rank may own distinct model/optimizer state, so `accelerator.save_state(...)` is intentionally called by all ranks. Small logical metadata (`trainer_state.json`, training config, tokenizer metadata) is written by global rank 0 after the collective save.
-
-Adapter export follows the same ownership split: required adapter parameters participate in any necessary gather, but only global rank 0 serializes the final adapter files.
-
-LoRA and TrainableTokens merge are **driver-only** operations. `merge_lora()` and `merge_trainable_tokens()` reject an active/environment-declared world size greater than one. The intended lifecycle is distributed training -> rank-0 adapter serialization -> worker exit -> single-process offline merge.
-
-## Export
-
-Distributed full-model export obtains the state dict through `accelerator.get_state_dict(model)` before calling Hugging Face `save_pretrained(...)`. This is important for sharded backends such as ZeRO-3, where the in-memory model parameters are not necessarily present as one complete copy on each rank.
-
-## Validation levels
-
-DeepSpeed support is validated at multiple levels rather than treating all tests as equivalent.
-
-### CPU unit tests
-
-Normal CI validates configuration translation, ownership rules, `DummyOptim` / `DummyScheduler` construction, offload validation, gradient-checkpointing configuration, and ZeRO-aware export contracts without starting a DeepSpeed engine.
-
-### Two-process generic distributed integration
-
-A CPU integration test launches two real processes with `torch.distributed.run` and validates rank/global-local ownership, local-rank-0 materialization, all-rank model construction, DataLoader sharding, reuse of one `DistributedRuntime` inside `Trainer`, distributed scheduler horizon, and the driver-only guard. This validates generic distributed lifecycle semantics without claiming ZeRO-3 parameter sharding.
-
-### Real DeepSpeed CPU integration
-
-A separate CPU CI job installs the real DeepSpeed package and starts an actual DeepSpeed runtime. The integration test uses a tiny locally constructed Hugging Face GPT-2 model and validates:
-
-- `deepspeed.initialize()` through `Accelerator.prepare(...)`;
-- a real `DeepSpeedEngine` rather than a mock;
-- DeepSpeed-owned AdamW through `DummyOptim`;
-- DeepSpeed-owned `WarmupDecayLR` through `DummyScheduler`;
-- forward, external causal-LM loss, backward, optimizer step, and scheduler step;
-- a step-1 DeepSpeed checkpoint followed by an intentional process interruption;
-- resume from that checkpoint in a fresh Python process;
-- completion of the next optimizer step;
-- LoRA/TrainableTokens adapter lifecycle tests where configured;
-- Hugging Face model export after resume for the full-fine-tune path.
-
-This test currently exercises ZeRO stage 2 with world size 1. It verifies real DeepSpeed/Accelerate API integration and checkpoint lifecycle on CPU, but it does **not** prove cross-rank parameter partitioning.
-
-### GPU validation
-
-The [2026-09-04 GPU matrix](gpu-validation.md) records single-L4 BF16,
-ZeRO-3 and clean CPUAdam offload lifecycles, plus two-node NCCL runs with one
-L4 per host. The two-node runs verify actual parameter partitioning,
-LoRA/TrainableTokens adapter gathering, distributed checkpoint/resume,
-full-model export and offline merge/reload. Non-reentrant gradient
-checkpointing passed for LoRA and TrainableTokens on tiny GPT-2 fixtures.
-
-These results apply to the recorded sources and dependency stack. Same-host
-GPUs with distinct local indices, distributed CPU offload, broader models and
-long-run performance still require validation. Initialization-time ZeRO-3
-partitioning requires implementation before testing.
+The plan shows optimizer/scheduler ownership, LR/betas/eps/weight decay, ZeRO stage, offload, clipping owner, batch math, warmup, and the effective generated DeepSpeed config. During supported high-level runs, the same plan is persisted as `training-plan.json`.

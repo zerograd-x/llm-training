@@ -189,13 +189,33 @@ def build_training_plan(
         trainable_fraction = adaptation_summary.trainable_fraction
 
     ds = config.deepspeed
-    optimizer_owner = "deepspeed" if ds is not None and ds.optimizer is not None else "torch"
-    optimizer_type = ds.optimizer.type if optimizer_owner == "deepspeed" else "AdamW"
-    scheduler_owner = "deepspeed" if ds is not None and ds.scheduler is not None else "torch/hf"
-    scheduler_type = ds.scheduler.type if scheduler_owner == "deepspeed" else config.scheduler.name
+    if ds is None:
+        optimizer_owner = "torch"
+        scheduler_owner = "torch/hf"
+    else:
+        optimizer_owner = (
+            "deepspeed"
+            if ds.optimizer is not None
+            else "torch-configured / deepspeed-prepared"
+        )
+        scheduler_owner = (
+            "deepspeed"
+            if ds.scheduler is not None
+            else "torch/hf-configured / deepspeed-prepared"
+        )
+    optimizer_type = (
+        ds.optimizer.type
+        if ds is not None and ds.optimizer is not None
+        else "AdamW"
+    )
+    scheduler_type = (
+        ds.scheduler.type
+        if ds is not None and ds.scheduler is not None
+        else config.scheduler.name
+    )
     gradient_clip_owner = None
     if config.max_grad_norm is not None:
-        gradient_clip_owner = "deepspeed" if ds is not None else "accelerate"
+        gradient_clip_owner = "deepspeed engine" if ds is not None else "accelerate"
     effective_ds = build_deepspeed_config(config) if ds is not None else None
 
     warnings: list[PlanWarning] = []

@@ -9,12 +9,14 @@ from torch.utils.data import Dataset
 from llm_training import (
     BaseLoss,
     CheckpointConfig,
+    DeepSpeedConfig,
     DistributedRuntime,
     LossConfig,
     OptimizerConfig,
     SchedulerConfig,
     Trainer,
     TrainingConfig,
+    build_training_plan,
 )
 from llm_training.checkpoint import find_latest_checkpoint
 
@@ -89,6 +91,31 @@ def build_config(tmp_path, *, loss=None) -> TrainingConfig:
         loss=loss or LossConfig(),
         checkpoint=CheckpointConfig(save_every_steps=1, keep_last=2),
     )
+
+
+def test_training_plan_matches_distributed_step_accounting(tmp_path) -> None:
+    config = TrainingConfig(
+        output_dir=str(tmp_path / "run"),
+        num_epochs=1,
+        per_device_batch_size=8,
+        gradient_accumulation_steps=1,
+        scheduler=SchedulerConfig(name="cosine", warmup_ratio=0.03),
+        checkpoint=CheckpointConfig(save_every_steps=500, keep_last=2),
+        deepspeed=DeepSpeedConfig(zero_stage=3),
+    )
+
+    plan = build_training_plan(config, train_examples=50_000, world_size=4)
+
+    assert plan.global_batch_size == 32
+    assert plan.batches_per_rank == 1563
+    assert plan.optimizer_steps == 1563
+    assert plan.scheduler_steps == 6252
+    assert plan.warmup_optimizer_steps == 47
+    assert plan.expected_checkpoints == 4
+    assert plan.retained_checkpoints == 2
+    assert {warning.code for warning in plan.warnings} == {
+        "zero3_initial_load_unpartitioned"
+    }
 
 
 def test_trainer_runs_and_saves_checkpoint(tmp_path) -> None:

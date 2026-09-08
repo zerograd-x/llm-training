@@ -45,7 +45,7 @@ jobs:
           tests/integration/test_lora_training.py
           tests/integration/test_trainable_tokens_training.py
 
-  portable-workflow:
+  training-api:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -64,11 +64,11 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev,peft]" -e .ci/llm-training-data
-      - name: Require optional workflow dependencies
+      - name: Require optional training dependencies
         run: python -c "import llm_training_data, peft"
-      - name: Test real data bridge and full/LoRA/TrainableTokens workflow
+      - name: Test high-level training API and data bridge
         run: >-
-          pytest tests/test_portable_workflow.py
+          pytest tests/test_training_api.py
           tests/integration/test_training_data_bridge.py
 
   deepspeed-cpu-integration:

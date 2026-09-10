@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -182,7 +183,14 @@ class Trainer:
             batches_per_process / config.gradient_accumulation_steps
         )
         scheduler_steps_per_epoch = updates_per_epoch * self.accelerator.num_processes
-        total_training_steps = scheduler_steps_per_epoch * config.num_epochs
+        optimizer_training_steps = (
+            config.max_steps
+            if config.max_steps is not None
+            else updates_per_epoch * config.num_epochs
+        )
+        total_training_steps = (
+            optimizer_training_steps * self.accelerator.num_processes
+        )
         scheduler = scheduler or build_training_scheduler(
             optimizer,
             config,
@@ -209,8 +217,17 @@ class Trainer:
         running_loss = 0.0
         running_updates = 0
         start_epoch = self.state.epoch
+        if (
+            self.config.max_steps is not None
+            and self.state.global_step >= self.config.max_steps
+        ):
+            epoch_iterator = ()
+        elif self.config.max_steps is not None:
+            epoch_iterator = itertools.count(start_epoch)
+        else:
+            epoch_iterator = range(start_epoch, self.config.num_epochs)
 
-        for epoch in range(start_epoch, self.config.num_epochs):
+        for epoch in epoch_iterator:
             self._sampler.set_epoch(epoch)
             start_batch = self.state.batch_in_epoch if epoch == start_epoch else 0
             epoch_loader = self.train_dataloader
@@ -226,6 +243,7 @@ class Trainer:
             if callable(set_epoch):
                 set_epoch(epoch)
 
+            reached_step_limit = False
             for batch_index, batch in enumerate(epoch_loader, start=start_batch):
                 with self.accelerator.accumulate(self.model):
                     raise_if_any_rank_failed(
@@ -312,17 +330,31 @@ class Trainer:
                     if save_every and self.state.global_step % save_every == 0:
                         self.save_checkpoint()
 
-            self.state.epoch = epoch + 1
-            self.state.batch_in_epoch = 0
-            every_epochs = self.config.evaluation.every_epochs
-            if (
-                self.eval_dataset is not None
-                and every_epochs
-                and self.state.epoch % every_epochs == 0
-            ):
-                if self.state.last_eval_step != self.state.global_step:
-                    self.evaluate()
-                self.state.last_eval_epoch = self.state.epoch
+                    if (
+                        self.config.max_steps is not None
+                        and self.state.global_step >= self.config.max_steps
+                    ):
+                        reached_step_limit = True
+
+                if reached_step_limit:
+                    break
+
+            epoch_completed = self.state.batch_in_epoch >= len(self.train_dataloader)
+            if epoch_completed:
+                self.state.epoch = epoch + 1
+                self.state.batch_in_epoch = 0
+                every_epochs = self.config.evaluation.every_epochs
+                if (
+                    self.eval_dataset is not None
+                    and every_epochs
+                    and self.state.epoch % every_epochs == 0
+                ):
+                    if self.state.last_eval_step != self.state.global_step:
+                        self.evaluate()
+                    self.state.last_eval_epoch = self.state.epoch
+
+            if reached_step_limit:
+                break
 
         needs_final_checkpoint = False
         error = None

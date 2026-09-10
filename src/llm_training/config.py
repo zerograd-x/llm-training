@@ -140,6 +140,7 @@ class EvaluationConfig:
 class TrainingConfig:
     output_dir: str
     num_epochs: int = 1
+    max_steps: int | None = None
     per_device_batch_size: int = 1
     gradient_accumulation_steps: int = 1
     mixed_precision: str = "no"
@@ -169,6 +170,8 @@ class TrainingConfig:
                 raise ValueError(f"evaluation.{name} must be > 0 when set")
         if self.num_epochs <= 0:
             raise ValueError("num_epochs must be > 0")
+        if self.max_steps is not None and self.max_steps <= 0:
+            raise ValueError("max_steps must be > 0 when set")
         if self.per_device_batch_size <= 0:
             raise ValueError("per_device_batch_size must be > 0")
         if self.gradient_accumulation_steps <= 0:

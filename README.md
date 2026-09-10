@@ -86,6 +86,7 @@ The effective plan reports:
 
 - trainable-parameter policy and, after model adaptation, exact trainable parameter counts
 - per-device batch, gradient accumulation, global batch, and optimizer-step count
+- explicit epoch- or optimizer-step-based training horizon
 - optimizer and scheduler ownership plus LR, betas, epsilon, weight decay, and warmup
 - DeepSpeed ZeRO/offload/clipping settings and the generated effective DeepSpeed config
 - checkpoint/evaluation cadence and retention
@@ -118,6 +119,21 @@ trainer = Trainer(
 )
 trainer.train()
 ```
+
+For step-based training, set `max_steps`. It is the authoritative stopping
+horizon and may span multiple passes over a finite map-style dataset:
+
+```python
+config = TrainingConfig(
+    output_dir="./outputs",
+    max_steps=100_000,
+)
+```
+
+When `max_steps` is set, `num_epochs` no longer limits stopping. Epochs remain
+the unit for deterministic data reshuffling, resume position, and optional
+epoch-based evaluation. Warmup, logging, evaluation, and checkpoint step settings
+continue to mean synchronized optimizer updates.
 
 ## High-level local training
 

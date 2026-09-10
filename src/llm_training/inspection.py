@@ -25,6 +25,8 @@ class TrainingPlan:
     model_name: str | None
     max_sequence_length: int | None
     train_examples: int | None
+    num_epochs: int
+    max_steps: int | None
     world_size: int
     per_device_batch_size: int
     gradient_accumulation_steps: int
@@ -135,7 +137,13 @@ def build_training_plan(
         updates_per_epoch = math.ceil(
             batches_per_rank / config.gradient_accumulation_steps
         )
+
+    if config.max_steps is not None:
+        optimizer_steps = config.max_steps
+    elif updates_per_epoch is not None:
         optimizer_steps = updates_per_epoch * config.num_epochs
+
+    if optimizer_steps is not None:
         scheduler_steps = optimizer_steps * world_size
         warmup_optimizer_steps = resolve_warmup_steps(
             config.scheduler,
@@ -156,26 +164,37 @@ def build_training_plan(
             else min(expected_checkpoints, config.checkpoint.keep_last)
         )
 
-        if has_eval_data:
-            eval_steps: set[int] = set()
-            if config.evaluation.every_steps is not None:
-                eval_steps.update(
-                    range(
-                        config.evaluation.every_steps,
-                        optimizer_steps + 1,
-                        config.evaluation.every_steps,
-                    )
+    if has_eval_data and optimizer_steps is not None:
+        eval_steps: set[int] = set()
+        if config.evaluation.every_steps is not None:
+            eval_steps.update(
+                range(
+                    config.evaluation.every_steps,
+                    optimizer_steps + 1,
+                    config.evaluation.every_steps,
                 )
-            if config.evaluation.every_epochs is not None:
+            )
+
+        if config.evaluation.every_epochs is not None:
+            if updates_per_epoch is None:
+                evaluation_events = None
+            else:
+                completed_epochs = (
+                    optimizer_steps // updates_per_epoch
+                    if config.max_steps is not None
+                    else config.num_epochs
+                )
                 for epoch in range(
                     config.evaluation.every_epochs,
-                    config.num_epochs + 1,
+                    completed_epochs + 1,
                     config.evaluation.every_epochs,
                 ):
                     eval_steps.add(epoch * updates_per_epoch)
-            evaluation_events = len(eval_steps)
+                evaluation_events = len(eval_steps)
         else:
-            evaluation_events = 0
+            evaluation_events = len(eval_steps)
+    elif not has_eval_data:
+        evaluation_events = 0
 
     if adaptation_summary is None:
         adaptation_method = _requested_adaptation(config)
@@ -220,10 +239,17 @@ def build_training_plan(
 
     warnings: list[PlanWarning] = []
     if train_examples is None:
+        message = (
+            "Dataset size was not supplied; per-epoch batch/update counts and "
+            "epoch-based evaluation counts cannot be resolved."
+            if config.max_steps is not None
+            else "Dataset size was not supplied; optimizer-step, warmup, "
+            "checkpoint, and evaluation counts cannot be resolved."
+        )
         warnings.append(
             PlanWarning(
                 "unknown_dataset_size",
-                "Dataset size was not supplied; optimizer-step, warmup, checkpoint, and evaluation counts cannot be resolved.",
+                message,
             )
         )
     if output_exists and config.checkpoint.resume_from is None:
@@ -252,6 +278,13 @@ def build_training_plan(
             PlanWarning(
                 "final_checkpoint_only",
                 "This run will have only the final checkpoint; there is no intermediate recovery point.",
+            )
+        )
+    if has_eval_data and evaluation_events == 0:
+        warnings.append(
+            PlanWarning(
+                "no_evaluation_points",
+                "Evaluation data was supplied but no evaluation point occurs within the configured training horizon.",
             )
         )
     if has_eval_data and evaluation_events == 1:
@@ -293,6 +326,8 @@ def build_training_plan(
         model_name=model_name,
         max_sequence_length=max_sequence_length,
         train_examples=train_examples,
+        num_epochs=config.num_epochs,
+        max_steps=config.max_steps,
         world_size=world_size,
         per_device_batch_size=config.per_device_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
@@ -401,6 +436,11 @@ def format_training_plan(plan: TrainingPlan) -> str:
         "",
         "BATCH",
         f"  examples: {_value(plan.train_examples)}",
+        (
+            f"  stopping horizon: {plan.max_steps} optimizer steps"
+            if plan.max_steps is not None
+            else f"  stopping horizon: {plan.num_epochs} epochs"
+        ),
         f"  world size: {plan.world_size}",
         f"  per-device batch: {plan.per_device_batch_size}",
         f"  gradient accumulation: {plan.gradient_accumulation_steps}",

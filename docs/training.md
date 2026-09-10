@@ -29,7 +29,7 @@ The effective plan reports:
 - run id, local output directory, and optional durable artifact URI;
 - model, precision, backend, sequence-length ceiling, and gradient checkpointing;
 - requested/effective adaptation policy and exact trainable parameter counts after model adaptation;
-- per-device batch, world size, gradient accumulation, global batch, and optimizer-step count;
+- per-device batch, world size, gradient accumulation, global batch, optimizer-step count, and stopping horizon;
 - optimizer owner/type plus LR, betas, epsilon, and weight decay;
 - scheduler owner/type, warmup, and the backend's internal scheduler horizon;
 - DeepSpeed ZeRO stage, optimizer/parameter offload, gradient clipping ownership, and the generated DeepSpeed config;
@@ -129,6 +129,13 @@ trainer = Trainer(
 )
 trainer.train()
 ```
+
+`TrainingConfig.max_steps` provides a first-class optimizer-step horizon. When
+set, it overrides `num_epochs` as the stopping condition and the finite dataset
+is reshuffled and cycled for as many epochs as needed. Scheduler horizon, warmup,
+checkpoint cadence, and step-based evaluation are resolved from `max_steps`.
+Epoch counters remain meaningful for deterministic sampling, resume, and
+`evaluation.every_epochs`.
 
 `llm-training-data` owns rendering, tokenization, masking, padding, and packing. The core training package owns model adaptation, loss, optimizer/scheduler, checkpointing, evaluation, and export.
 

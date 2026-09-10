@@ -13,6 +13,7 @@ from llm_training import (
     CheckpointConfig,
     DeepSpeedConfig,
     DistributedRuntime,
+    EvaluationConfig,
     LossConfig,
     OptimizerConfig,
     SchedulerConfig,
@@ -282,3 +283,98 @@ def test_trainer_fails_before_update_on_nonfinite_loss(tmp_path) -> None:
 
     with pytest.raises(FloatingPointError, match="Non-finite loss"):
         trainer.train()
+
+
+
+def test_training_plan_max_steps_is_authoritative_horizon(tmp_path) -> None:
+    config = TrainingConfig(
+        output_dir=str(tmp_path / "run"),
+        num_epochs=1,
+        max_steps=5,
+        per_device_batch_size=2,
+        gradient_accumulation_steps=1,
+        log_every_steps=10,
+        scheduler=SchedulerConfig(name="linear", warmup_ratio=0.2),
+        checkpoint=CheckpointConfig(save_every_steps=2, keep_last=None),
+        evaluation=EvaluationConfig(every_steps=2, every_epochs=1),
+    )
+
+    plan = build_training_plan(
+        config,
+        train_examples=4,
+        world_size=4,
+        has_eval_data=True,
+    )
+
+    assert plan.num_epochs == 1
+    assert plan.max_steps == 5
+    assert plan.optimizer_steps_per_epoch == 1
+    assert plan.optimizer_steps == 5
+    assert plan.scheduler_steps == 20
+    assert plan.warmup_optimizer_steps == 1
+    assert plan.expected_checkpoints == 3
+    assert plan.evaluation_events == 5
+
+
+def test_training_plan_resolves_step_horizon_without_dataset_size(tmp_path) -> None:
+    config = TrainingConfig(
+        output_dir=str(tmp_path / "run"),
+        max_steps=10,
+        scheduler=SchedulerConfig(name="linear", warmup_ratio=0.1),
+        checkpoint=CheckpointConfig(save_every_steps=4, keep_last=None),
+        evaluation=EvaluationConfig(every_steps=5, every_epochs=None),
+    )
+
+    plan = build_training_plan(
+        config,
+        train_examples=None,
+        world_size=2,
+        has_eval_data=True,
+    )
+
+    assert plan.batches_per_rank is None
+    assert plan.optimizer_steps_per_epoch is None
+    assert plan.optimizer_steps == 10
+    assert plan.scheduler_steps == 20
+    assert plan.warmup_optimizer_steps == 1
+    assert plan.expected_checkpoints == 3
+    assert plan.evaluation_events == 2
+    assert {warning.code for warning in plan.warnings} == {
+        "unknown_dataset_size",
+    }
+
+
+def test_trainer_max_steps_cycles_dataset_and_stops_exactly(tmp_path) -> None:
+    config = TrainingConfig(
+        output_dir=str(tmp_path),
+        num_epochs=1,
+        max_steps=3,
+        per_device_batch_size=2,
+        log_every_steps=1,
+        optimizer=OptimizerConfig(learning_rate=1e-2, weight_decay=0.0),
+        scheduler=SchedulerConfig(name="linear", warmup_ratio=0.0),
+        checkpoint=CheckpointConfig(save_every_steps=None, keep_last=2),
+    )
+    trainer = Trainer(
+        model=TinyLM(),
+        train_dataset=TinyDataset(),
+        collate_fn=stack_collator,
+        config=config,
+    )
+
+    state = trainer.train()
+
+    assert state.global_step == 3
+    assert state.epoch == 1
+    assert state.batch_in_epoch == 1
+    latest = find_latest_checkpoint(tmp_path)
+    assert latest is not None
+    assert latest.name == "checkpoint-00000003"
+
+
+def test_training_config_rejects_nonpositive_max_steps(tmp_path) -> None:
+    with pytest.raises(ValueError, match="max_steps"):
+        TrainingConfig(
+            output_dir=str(tmp_path),
+            max_steps=0,
+        ).validate()

@@ -182,7 +182,6 @@ class Trainer:
         updates_per_epoch = math.ceil(
             batches_per_process / config.gradient_accumulation_steps
         )
-        scheduler_steps_per_epoch = updates_per_epoch * self.accelerator.num_processes
         optimizer_training_steps = (
             config.max_steps
             if config.max_steps is not None
@@ -211,6 +210,14 @@ class Trainer:
                 config.checkpoint.resume_from,
             )
             self.state = load_training_checkpoint(self.accelerator, checkpoint_dir)
+            if (
+                config.max_steps is not None
+                and self.state.global_step > config.max_steps
+            ):
+                raise ValueError(
+                    f"Resume checkpoint global_step={self.state.global_step} exceeds "
+                    f"max_steps={config.max_steps}"
+                )
 
     def train(self) -> TrainerState:
         self.model.train()

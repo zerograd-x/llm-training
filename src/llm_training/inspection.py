@@ -239,10 +239,17 @@ def build_training_plan(
 
     warnings: list[PlanWarning] = []
     if train_examples is None:
+        message = (
+            "Dataset size was not supplied; per-epoch batch/update counts and "
+            "epoch-based evaluation counts cannot be resolved."
+            if config.max_steps is not None
+            else "Dataset size was not supplied; optimizer-step, warmup, "
+            "checkpoint, and evaluation counts cannot be resolved."
+        )
         warnings.append(
             PlanWarning(
                 "unknown_dataset_size",
-                "Dataset size was not supplied; optimizer-step, warmup, checkpoint, and evaluation counts cannot be resolved.",
+                message,
             )
         )
     if output_exists and config.checkpoint.resume_from is None:
@@ -271,6 +278,13 @@ def build_training_plan(
             PlanWarning(
                 "final_checkpoint_only",
                 "This run will have only the final checkpoint; there is no intermediate recovery point.",
+            )
+        )
+    if has_eval_data and evaluation_events == 0:
+        warnings.append(
+            PlanWarning(
+                "no_evaluation_points",
+                "Evaluation data was supplied but no evaluation point occurs within the configured training horizon.",
             )
         )
     if has_eval_data and evaluation_events == 1:

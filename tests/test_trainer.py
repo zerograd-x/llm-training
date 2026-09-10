@@ -285,7 +285,6 @@ def test_trainer_fails_before_update_on_nonfinite_loss(tmp_path) -> None:
         trainer.train()
 
 
-
 def test_training_plan_max_steps_is_authoritative_horizon(tmp_path) -> None:
     config = TrainingConfig(
         output_dir=str(tmp_path / "run"),

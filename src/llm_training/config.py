@@ -140,7 +140,6 @@ class EvaluationConfig:
 class TrainingConfig:
     output_dir: str
     num_epochs: int = 1
-    max_steps: int | None = None
     per_device_batch_size: int = 1
     gradient_accumulation_steps: int = 1
     mixed_precision: str = "no"
@@ -159,6 +158,7 @@ class TrainingConfig:
     deepspeed: DeepSpeedConfig | None = None
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    max_steps: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

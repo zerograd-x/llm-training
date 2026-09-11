@@ -134,11 +134,15 @@ def run_sft_case(case: str, model: str, output: Path):
     if state.global_step < 1:
         raise AssertionError("training produced no optimizer updates")
 
+    latest_checkpoint = output / f"checkpoint-{state.global_step:08d}"
+    if not latest_checkpoint.exists():
+        raise AssertionError(f"checkpoint missing: {latest_checkpoint}")
+
     if case == "lora":
         adapter = trainer.save_adapter()
         if not (adapter / "adapter_config.json").exists():
             raise AssertionError("LoRA adapter export is missing adapter_config.json")
-    else:
+    elif case == "partial_bf16":
         trainer.export_model()
         final_model = output / "final-model"
         if not (final_model / "config.json").exists():
@@ -196,6 +200,9 @@ def run_pretrain_case(model: str, output: Path):
     state = trainer.train()
     if state.global_step != 2:
         raise AssertionError(f"expected 2 pretraining steps, got {state.global_step}")
+    checkpoint = output / f"checkpoint-{state.global_step:08d}"
+    if not checkpoint.exists():
+        raise AssertionError(f"pretraining checkpoint missing: {checkpoint}")
     return state.global_step
 
 

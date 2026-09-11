@@ -88,7 +88,7 @@ def make_common(output: Path, *, max_steps: int | None = None):
             use_reentrant=False,
         ),
         checkpoint=CheckpointConfig(
-            save_every_steps=1,
+            save_every_steps=None,
             keep_last=1,
         ),
     )

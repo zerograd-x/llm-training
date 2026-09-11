@@ -2,6 +2,8 @@ name: Qwen3.5 Training GPU Matrix
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
   single-gpu:

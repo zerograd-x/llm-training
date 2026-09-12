@@ -10,6 +10,9 @@ The project is intentionally split from [`llm-training-data`](https://github.com
 
 Dependency direction is one-way: `llm-training` may consume `llm-training-data`; `llm-training-data` must not depend on this package.
 
+To run common SFT or causal-LM jobs directly from YAML/JSON with the installed
+wheel, see [Config-driven training](docs/config-driven.md).
+
 ## Scope
 
 The core runtime supports:

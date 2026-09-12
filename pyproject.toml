@@ -10,9 +10,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "accelerate>=1.0,<2",
+  "PyYAML>=6,<7",
   "torch>=2.1",
   "transformers>=5.3,<6",
 ]
+
+[project.scripts]
+llm-train = "llm_training.cli:main"
 
 [project.optional-dependencies]
 peft = [

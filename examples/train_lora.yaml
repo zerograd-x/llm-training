@@ -1,0 +1,37 @@
+model:
+  name_or_path: Qwen/Qwen3.5-4B
+  dtype: bfloat16
+
+data:
+  train_file: train.jsonl
+  format: sft
+  prompt_field: prompt
+  completion_field: completion
+  max_sequence_length: 2048
+
+training:
+  output_dir: outputs/qwen35-lora
+  num_epochs: 1
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 8
+  mixed_precision: bf16
+  max_steps: 100
+
+lora:
+  rank: 8
+  alpha: 16
+  target_last_n_layers: 8
+
+optimizer:
+  learning_rate: 0.00002
+
+gradient_checkpointing:
+  enabled: true
+  use_reentrant: false
+
+checkpoint:
+  save_every_steps: null
+  keep_last: 1
+
+artifacts:
+  save: auto

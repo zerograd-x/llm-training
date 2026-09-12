@@ -55,6 +55,15 @@ def _require_text(row: Mapping[str, Any], field: str) -> str:
     return value
 
 
+def validate_dataset(dataset: JsonlDataset, data: DataConfig) -> None:
+    for row in dataset.rows:
+        if data.format == "sft":
+            _require_text(row, data.prompt_field)
+            _require_text(row, data.completion_field)
+        else:
+            _require_text(row, data.text_field)
+
+
 def build_collator(tokenizer, data: DataConfig):
     def collate(rows: list[Mapping[str, Any]]) -> dict[str, torch.Tensor]:
         encoded: list[tuple[list[int], list[int]]] = []
@@ -162,6 +171,9 @@ def main(argv: list[str] | None = None) -> int:
             if job.data.validation_file is not None
             else None
         )
+        validate_dataset(train_dataset, job.data)
+        if eval_dataset is not None:
+            validate_dataset(eval_dataset, job.data)
         plan = build_training_plan(
             job.training,
             train_examples=len(train_dataset),
@@ -180,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"training completed at global_step={state.global_step}")
         return 0
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.exit(2, f"llm-train: error: {exc}\n")
 
 

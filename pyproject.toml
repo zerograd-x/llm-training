@@ -19,9 +19,16 @@ dependencies = [
 llm-train = "llm_training.cli:main"
 
 [project.optional-dependencies]
-peft = ["peft>=0.15,<1", "safetensors>=0.4,<1"]
-deepspeed = ["deepspeed>=0.14.5,<1"]
-dev = ["pytest>=8,<9"]
+peft = [
+  "peft>=0.15,<1",
+  "safetensors>=0.4,<1",
+]
+deepspeed = [
+  "deepspeed>=0.14.5,<1",
+]
+dev = [
+  "pytest>=8,<9",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -30,3 +37,7 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "integration: downloads and runs a real external model",
+  "gpu: requires a CUDA GPU",
+]

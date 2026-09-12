@@ -180,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             world_size=active_world_size(),
             model_name=job.model.name_or_path,
             max_sequence_length=job.data.max_sequence_length,
+            has_eval_data=eval_dataset is not None,
         )
         print(format_training_plan(plan))
         print(f"train data: {job.data.train_file}")

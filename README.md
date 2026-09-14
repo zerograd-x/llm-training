@@ -236,4 +236,3 @@ Long-lived documentation is intentionally small:
 - [`evaluation.md`](docs/evaluation.md) — validation behavior and metrics
 - [`peft.md`](docs/peft.md) — LoRA and PEFT behavior
 - [`trainable_tokens.md`](docs/trainable_tokens.md) — TrainableTokens behavior
-- [`qwen35_aws_training_runbook.md`](docs/qwen35_aws_training_runbook.md) — Qwen3.5 AWS operations

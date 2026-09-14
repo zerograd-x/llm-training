@@ -23,6 +23,7 @@ from .config import (
     DeepSpeedConfig,
     DeepSpeedOptimizerConfig,
     DeepSpeedSchedulerConfig,
+    DPOConfig,
     FreezeConfig,
     GradientCheckpointingConfig,
     LoRAConfig,
@@ -33,6 +34,7 @@ from .config import (
     TrainingConfig,
 )
 from .data import adapt_column_batch_collator, rows_to_column_batch
+from .dpo import dpo_deepspeed_config, dpo_training_arguments, prepare_preference_rows, run_dpo_job
 from .distributed import (
     DistributedRuntime,
     MaterializationScope,
@@ -76,6 +78,7 @@ __all__ = [
     "DeepSpeedConfig",
     "DeepSpeedOptimizerConfig",
     "DeepSpeedSchedulerConfig",
+    "DPOConfig",
     "DefaultCrossEntropyLoss",
     "DistributedRuntime",
     "EvaluationConfig",
@@ -106,6 +109,8 @@ __all__ = [
     "build_training_plan",
     "discover_lora_target_modules",
     "discover_trainable_token_target_modules",
+    "dpo_deepspeed_config",
+    "dpo_training_arguments",
     "expand_vocabulary",
     "find_embedding",
     "find_latest_checkpoint",
@@ -120,7 +125,9 @@ __all__ = [
     "require_single_process",
     "resolve_run_identity",
     "resolve_trainable_token_ids",
+    "prepare_preference_rows",
     "rows_to_column_batch",
+    "run_dpo_job",
     "run_training",
     "save_causal_lm",
     "save_lora_adapter",

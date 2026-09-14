@@ -26,6 +26,10 @@ peft = [
 deepspeed = [
   "deepspeed>=0.14.5,<1",
 ]
+dpo = [
+  "datasets>=3,<5",
+  "trl>=0.23,<0.24",
+]
 dev = [
   "pytest>=8,<9",
 ]

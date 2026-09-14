@@ -123,6 +123,35 @@ class DeepSpeedConfig:
 
 
 @dataclass(frozen=True)
+class DPOConfig:
+    """Direct Preference Optimization parameters owned by TRL."""
+
+    beta: float = 0.1
+    loss_type: Literal["sigmoid", "hinge", "ipo"] = "sigmoid"
+    label_smoothing: float = 0.0
+    max_length: int = 1024
+    max_prompt_length: int = 512
+    reference_free: bool = False
+    system_prompt: str | None = None
+
+    def validate(self) -> None:
+        if self.beta <= 0:
+            raise ValueError("dpo.beta must be > 0")
+        if self.loss_type not in {"sigmoid", "hinge", "ipo"}:
+            raise ValueError("dpo.loss_type must be one of: sigmoid, hinge, ipo")
+        if not 0 <= self.label_smoothing < 0.5:
+            raise ValueError("dpo.label_smoothing must be in [0, 0.5)")
+        if self.max_length <= 0:
+            raise ValueError("dpo.max_length must be > 0")
+        if self.max_prompt_length <= 0:
+            raise ValueError("dpo.max_prompt_length must be > 0")
+        if self.max_prompt_length > self.max_length:
+            raise ValueError("dpo.max_prompt_length must be <= dpo.max_length")
+        if self.system_prompt is not None and not self.system_prompt.strip():
+            raise ValueError("dpo.system_prompt must be non-empty when set")
+
+
+@dataclass(frozen=True)
 class CheckpointConfig:
     save_every_steps: int | None = None
     keep_last: int | None = 3

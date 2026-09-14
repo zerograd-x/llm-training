@@ -1,6 +1,6 @@
 # Run training from YAML or JSON
 
-After installing the wheel, common SFT and causal-LM jobs can be launched
+After installing the wheel, common SFT, causal-LM, and DPO jobs can be launched
 without writing Python:
 
 ```bash
@@ -109,6 +109,17 @@ This first config-driven version treats every JSONL row as one document and
 truncates it to `max_sequence_length`. It does not pack multiple documents into
 one sequence. Use the Python API and `llm-training-data` when deterministic
 packing, streaming mixtures, or custom transforms are required.
+
+## DPO preference training
+
+Set `data.format: dpo` and provide `prompt`, `chosen`, and `rejected`
+strings in each JSONL row. DPO uses the same CLI and shared training sections,
+with preference-specific controls under `dpo:`.
+
+Install `llm-training[dpo]`, plus `peft` for LoRA. See
+[`dpo.md`](dpo.md) and
+[`examples/train_dpo.yaml`](../examples/train_dpo.yaml) for the complete
+schema, reference-model behavior, and multi-GPU launch command.
 
 ## Partial and full fine-tuning
 

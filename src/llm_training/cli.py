@@ -60,6 +60,12 @@ def validate_dataset(dataset: JsonlDataset, data: DataConfig) -> None:
         if data.format == "sft":
             _require_text(row, data.prompt_field)
             _require_text(row, data.completion_field)
+        elif data.format == "dpo":
+            _require_text(row, data.prompt_field)
+            chosen = _require_text(row, data.chosen_field)
+            rejected = _require_text(row, data.rejected_field)
+            if chosen == rejected:
+                raise ValueError("DPO chosen and rejected completions must differ")
         else:
             _require_text(row, data.text_field)
 
@@ -125,6 +131,18 @@ def run_job(
     train_dataset: JsonlDataset | None = None,
     eval_dataset: JsonlDataset | None = None,
 ):
+    if job.data.format == "dpo":
+        train_dataset = train_dataset or load_jsonl(job.data.train_file)
+        if eval_dataset is None and job.data.validation_file is not None:
+            eval_dataset = load_jsonl(job.data.validation_file)
+        from .dpo import run_dpo_job
+
+        return run_dpo_job(
+            job,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+        )
+
     runtime = DistributedRuntime(job.training)
     components = runtime.load_causal_lm(
         job.model.name_or_path,
@@ -179,7 +197,11 @@ def main(argv: list[str] | None = None) -> int:
             train_examples=len(train_dataset),
             world_size=active_world_size(),
             model_name=job.model.name_or_path,
-            max_sequence_length=job.data.max_sequence_length,
+            max_sequence_length=(
+                job.dpo.max_length
+                if job.dpo is not None
+                else job.data.max_sequence_length
+            ),
             has_eval_data=eval_dataset is not None,
         )
         print(format_training_plan(plan))

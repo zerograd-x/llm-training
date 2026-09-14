@@ -10,8 +10,9 @@ The project is intentionally split from [`llm-training-data`](https://github.com
 
 Dependency direction is one-way: `llm-training` may consume `llm-training-data`; `llm-training-data` must not depend on this package.
 
-To run common SFT or causal-LM jobs directly from YAML/JSON with the installed
-wheel, see [Config-driven training](docs/config-driven.md).
+To run SFT, causal-LM, or DPO jobs directly from YAML/JSON with the installed
+wheel, see [Config-driven training](docs/config-driven.md) and
+[Config-driven DPO](docs/dpo.md).
 
 ## Scope
 
@@ -22,6 +23,7 @@ The core runtime supports:
 - full fine-tuning and selective layer freezing
 - LoRA and TrainableTokens
 - custom causal-LM losses
+- TRL-backed Direct Preference Optimization (DPO)
 - AdamW + Hugging Face schedulers
 - gradient checkpointing
 - DeepSpeed ZeRO-1/2/3
@@ -47,6 +49,7 @@ Optional features:
 ```bash
 pip install -e ".[peft]"
 pip install -e ".[deepspeed]"
+pip install -e ".[dpo,peft]"
 ```
 
 For SFT data preparation and the high-level local training API:
@@ -232,6 +235,7 @@ Long-lived documentation is intentionally small:
 
 - [`training.md`](docs/training.md) — training entry points, effective plans, run identity, and artifact lifecycle
 - [`deepspeed.md`](docs/deepspeed.md) — optimizer/scheduler ownership, step semantics, ZeRO, offload, and clipping
+- [`dpo.md`](docs/dpo.md) — preference data, DPO parameters, reference policy, LoRA, and multi-GPU launch
 - [`distributed-runtime.md`](docs/distributed-runtime.md) — distributed runtime contracts
 - [`evaluation.md`](docs/evaluation.md) — validation behavior and metrics
 - [`peft.md`](docs/peft.md) — LoRA and PEFT behavior

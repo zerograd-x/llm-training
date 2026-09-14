@@ -26,7 +26,7 @@ Add the `deepspeed` extra when using ZeRO:
 pip install "llm-training[dpo,peft,deepspeed]"
 ```
 
-The DPO extra pins the validated TRL 0.23 API. This matters because later TRL
+The DPO extra pins the TRL 0.23 API used by this implementation. This matters because later TRL
 versions removed `max_prompt_length`.
 
 ## Preference data

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 """TRL-backed Direct Preference Optimization for config-driven jobs."""
 
+from dataclasses import asdict
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -274,6 +276,16 @@ def run_dpo_job(
         trainer.save_model(job.training.output_dir)
         if trainer.is_world_process_zero():
             Path(job.training.output_dir).mkdir(parents=True, exist_ok=True)
+            output_dir = Path(job.training.output_dir)
             components.tokenizer.model_max_length = job.dpo.max_length
-            components.tokenizer.save_pretrained(job.training.output_dir)
+            components.tokenizer.save_pretrained(output_dir)
+            (output_dir / "dpo_config.json").write_text(
+                json.dumps(asdict(job.dpo), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            if job.dpo.system_prompt is not None:
+                (output_dir / "system_prompt.txt").write_text(
+                    job.dpo.system_prompt + "\n",
+                    encoding="utf-8",
+                )
     return result

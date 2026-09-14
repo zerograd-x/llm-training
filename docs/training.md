@@ -185,4 +185,3 @@ See:
 - `distributed-runtime.md` for distributed runtime contracts;
 - `evaluation.md` for evaluation semantics;
 - `peft.md` and `trainable_tokens.md` for parameter-efficient training;
-- `qwen35_aws_training_runbook.md` for the Qwen3.5 single-node AWS operational path.

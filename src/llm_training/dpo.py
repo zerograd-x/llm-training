@@ -6,6 +6,8 @@ import importlib.util
 from pathlib import Path
 from typing import Any, Mapping
 
+import torch
+
 from .adapters import adapt_model_for_training
 from .backend import configure_gradient_checkpointing
 from .config_file import DataConfig, TrainingJobConfig
@@ -210,7 +212,7 @@ def run_dpo_job(
                 {}
                 if job.model.dtype == "auto"
                 else {
-                    "torch_dtype": __import__("torch").__dict__[job.model.dtype]
+                    "torch_dtype": getattr(torch, job.model.dtype)
                 }
             ),
             "trust_remote_code": job.model.trust_remote_code,
@@ -250,6 +252,11 @@ def run_dpo_job(
         if eval_dataset is not None
         else None
     )
+    # TRL 0.23 writes into this mapping during construction. Some
+    # Transformers/PEFT combinations do not create it on the forwarded model.
+    if not hasattr(model, "warnings_issued"):
+        model.warnings_issued = {}
+
     args = TRLDPOConfig(**dpo_training_arguments(job))
     trainer = DPOTrainer(
         model=model,

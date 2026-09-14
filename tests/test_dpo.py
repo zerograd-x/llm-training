@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+
 import pytest
 
 from llm_training.config_file import training_job_from_dict
 from llm_training.dpo import (
+    _load_trl_dpo_classes,
     dpo_deepspeed_config,
     dpo_training_arguments,
     prepare_preference_rows,
@@ -109,3 +113,40 @@ def test_dpo_deepspeed_translation_leaves_optimizer_to_hf():
 def test_dpo_lengths_are_validated():
     with pytest.raises(ValueError, match="max_prompt_length must be <="):
         dpo_job(dpo={"max_length": 64, "max_prompt_length": 65})
+
+
+def test_trl_023_import_isolates_unused_callback_dependencies(monkeypatch):
+    fake_trl = ModuleType("trl")
+
+    class FakeDPOConfig:
+        pass
+
+    class FakeDPOTrainer:
+        pass
+
+    fake_trl.DPOConfig = FakeDPOConfig
+
+    def module_getattr(name):
+        if name != "DPOTrainer":
+            raise AttributeError(name)
+        mergekit_stub = sys.modules["trl.mergekit_utils"]
+        judges_stub = sys.modules["trl.trainer.judges"]
+        assert hasattr(mergekit_stub, "MergeConfig")
+        assert hasattr(mergekit_stub, "merge_models")
+        assert hasattr(judges_stub, "BasePairwiseJudge")
+        return FakeDPOTrainer
+
+    fake_trl.__getattr__ = module_getattr
+    old_mergekit = ModuleType("trl.mergekit_utils")
+    old_judges = ModuleType("trl.trainer.judges")
+    monkeypatch.setitem(sys.modules, "trl", fake_trl)
+    monkeypatch.setitem(sys.modules, "trl.mergekit_utils", old_mergekit)
+    monkeypatch.setitem(sys.modules, "trl.trainer.judges", old_judges)
+    monkeypatch.setattr("llm_training.dpo.package_version", lambda name: "0.23.0")
+
+    config_cls, trainer_cls = _load_trl_dpo_classes()
+
+    assert config_cls is FakeDPOConfig
+    assert trainer_cls is FakeDPOTrainer
+    assert sys.modules["trl.mergekit_utils"] is old_mergekit
+    assert sys.modules["trl.trainer.judges"] is old_judges

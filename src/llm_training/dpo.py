@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import importlib.util
+from importlib.metadata import version as package_version
 import json
 from pathlib import Path
+import sys
+from types import ModuleType
 from typing import Any, Mapping
 
 import torch
@@ -14,6 +17,61 @@ from .adapters import adapt_model_for_training
 from .backend import configure_gradient_checkpointing
 from .config_file import DataConfig, TrainingJobConfig
 from .model import load_causal_lm
+
+
+
+def _load_trl_dpo_classes():
+    """Import TRL 0.23 DPO classes without its unrelated optional callbacks.
+
+    TRL 0.23 imports mergekit and llm-blender callback modules eagerly. Those
+    packages are not used by DPOTrainer and may be absent or incompatible with
+    Transformers 5. Temporarily providing their imported symbols keeps the DPO
+    dependency surface limited to the code path we actually use.
+    """
+
+    from trl import DPOConfig as TRLDPOConfig
+
+    if not package_version("trl").startswith("0.23."):
+        from trl import DPOTrainer
+
+        return TRLDPOConfig, DPOTrainer
+
+    missing = object()
+    module_names = ("trl.mergekit_utils", "trl.trainer.judges")
+    previous = {name: sys.modules.get(name, missing) for name in module_names}
+
+    mergekit_stub = ModuleType("trl.mergekit_utils")
+
+    class MergeConfig:
+        pass
+
+    def _unavailable_callback(*args, **kwargs):
+        raise ImportError(
+            "This optional TRL callback requires mergekit/llm-blender."
+        )
+
+    mergekit_stub.MergeConfig = MergeConfig
+    mergekit_stub.merge_models = _unavailable_callback
+    mergekit_stub.upload_model_to_hf = _unavailable_callback
+
+    judges_stub = ModuleType("trl.trainer.judges")
+
+    class BasePairwiseJudge:
+        pass
+
+    judges_stub.BasePairwiseJudge = BasePairwiseJudge
+
+    sys.modules[module_names[0]] = mergekit_stub
+    sys.modules[module_names[1]] = judges_stub
+    try:
+        from trl import DPOTrainer
+    finally:
+        for name, old_value in previous.items():
+            if old_value is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = old_value
+    return TRLDPOConfig, DPOTrainer
 
 
 def _require_dpo_dependencies() -> None:
@@ -203,7 +261,8 @@ def run_dpo_job(
     _require_dpo_dependencies()
 
     from datasets import Dataset
-    from trl import DPOConfig as TRLDPOConfig, DPOTrainer
+
+    TRLDPOConfig, DPOTrainer = _load_trl_dpo_classes()
 
     components = load_causal_lm(
         job.model.name_or_path,

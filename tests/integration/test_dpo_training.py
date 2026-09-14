@@ -51,3 +51,4 @@ def test_real_dpo_trains_one_step(tmp_path) -> None:
 
     assert result.global_step == 1
     assert (tmp_path / "output" / "config.json").is_file()
+    assert (tmp_path / "output" / "dpo_config.json").is_file()

@@ -12,6 +12,7 @@ from .config import (
     DeepSpeedConfig,
     DeepSpeedOptimizerConfig,
     DeepSpeedSchedulerConfig,
+    DPOConfig,
     EvaluationConfig,
     FreezeConfig,
     GradientCheckpointingConfig,
@@ -98,21 +99,24 @@ class DataConfig:
     validation_file: str | None = None
     prompt_field: str = "prompt"
     completion_field: str = "completion"
+    chosen_field: str = "chosen"
+    rejected_field: str = "rejected"
     text_field: str = "text"
     max_sequence_length: int = 2048
 
     def __post_init__(self) -> None:
         if not self.train_file.strip():
             raise ValueError("data.train_file must be non-empty")
-        if self.format not in {"sft", "causal_lm"}:
-            raise ValueError("data.format must be 'sft' or 'causal_lm'")
+        if self.format not in {"sft", "causal_lm", "dpo"}:
+            raise ValueError("data.format must be one of: sft, causal_lm, dpo")
         if self.max_sequence_length <= 0:
             raise ValueError("data.max_sequence_length must be > 0")
-        required = (
-            (self.prompt_field, self.completion_field)
-            if self.format == "sft"
-            else (self.text_field,)
-        )
+        if self.format == "sft":
+            required = (self.prompt_field, self.completion_field)
+        elif self.format == "dpo":
+            required = (self.prompt_field, self.chosen_field, self.rejected_field)
+        else:
+            required = (self.text_field,)
         if any(not name.strip() for name in required):
             raise ValueError("data field names must be non-empty")
 
@@ -132,6 +136,7 @@ class TrainingJobConfig:
     data: DataConfig
     training: TrainingConfig
     artifacts: ArtifactConfig
+    dpo: DPOConfig | None = None
 
 
 _TRAINING_SCALARS = {
@@ -169,7 +174,7 @@ def training_job_from_dict(value: Mapping[str, Any]) -> TrainingJobConfig:
     sections = {
         "model", "data", "training", "freeze", "lora", "trainable_tokens",
         "optimizer", "scheduler", "loss", "gradient_checkpointing",
-        "deepspeed", "checkpoint", "evaluation", "artifacts",
+        "deepspeed", "checkpoint", "evaluation", "artifacts", "dpo",
     }
     unknown = sorted(set(payload) - sections)
     if unknown:
@@ -224,6 +229,33 @@ def training_job_from_dict(value: Mapping[str, Any]) -> TrainingJobConfig:
             "Config-driven LoRA does not support simultaneously training base-model "
             "parameters with freeze; use the Python API for a custom artifact lifecycle"
         )
+    data = _strict_dataclass(DataConfig, payload["data"], "data")
+    raw_dpo = payload.get("dpo")
+    if data.format == "dpo":
+        dpo = _strict_dataclass(DPOConfig, raw_dpo, "dpo")
+        dpo.validate()
+        if config.trainable_tokens is not None:
+            raise ValueError("DPO does not support trainable_tokens yet")
+        if config.loss.module_path is not None or config.loss.kwargs:
+            raise ValueError("DPO owns its loss; custom loss configuration is not supported")
+        if config.deepspeed is not None and (
+            config.deepspeed.optimizer is not None
+            or config.deepspeed.scheduler is not None
+        ):
+            raise ValueError(
+                "DPO uses the Hugging Face optimizer and scheduler; "
+                "deepspeed.optimizer/deepspeed.scheduler are not supported"
+            )
+        if config.evaluation.every_epochs not in {None, 1}:
+            raise ValueError(
+                "DPO supports evaluation.every_epochs only as 1; "
+                "use evaluation.every_steps for another cadence"
+            )
+    else:
+        if raw_dpo is not None:
+            raise ValueError("The dpo section requires data.format='dpo'")
+        dpo = None
+
     artifacts = _strict_dataclass(ArtifactConfig, payload.get("artifacts"), "artifacts")
     if artifacts.save == "adapter" and config.lora is None and config.trainable_tokens is None:
         raise ValueError("artifacts.save='adapter' requires lora or trainable_tokens")
@@ -231,9 +263,10 @@ def training_job_from_dict(value: Mapping[str, Any]) -> TrainingJobConfig:
         raise ValueError("artifacts.save='model' is not supported for adapter training; use 'adapter'")
     return TrainingJobConfig(
         model=_strict_dataclass(ModelConfig, payload["model"], "model"),
-        data=_strict_dataclass(DataConfig, payload["data"], "data"),
+        data=data,
         training=config,
         artifacts=artifacts,
+        dpo=dpo,
     )
 
 

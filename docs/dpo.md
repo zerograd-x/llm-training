@@ -51,11 +51,9 @@ data:
   rejected_field: loser
 ```
 
-This first wheel interface intentionally accepts the standard string preference
-format. Conversational arrays, image inputs, transform class loading, Spark,
-Ray DatasetVariable, and HDFS materialization remain upstream data/workflow
-concerns. Materialize their result as `prompt/chosen/rejected` JSONL before
-calling this CLI.
+This CLI accepts local JSONL in the standard string preference format.
+Convert other data sources to `prompt/chosen/rejected` JSONL before calling
+the CLI.
 
 ## Configuration
 

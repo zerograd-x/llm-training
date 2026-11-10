@@ -26,8 +26,9 @@ Add the `deepspeed` extra when using ZeRO:
 pip install "llm-training[dpo,peft,deepspeed]"
 ```
 
-The DPO extra pins the TRL 0.23 API used by this implementation. This matters because later TRL
-versions removed `max_prompt_length`.
+The DPO and GRPO extras use the same supported TRL 1.12 release. The runtime
+preserves `max_prompt_length` by truncating prompts before handing the dataset
+to TRL, whose newer DPO configuration no longer exposes that field.
 
 ## Preference data
 
@@ -125,7 +126,8 @@ The caller does not need to configure a second model path:
 - With LoRA, TRL evaluates the reference policy with the adapter disabled.
 - With full or selective base-model training, TRL creates a frozen copy of the
   initial policy.
-- With `reference_free: true`, TRL uses its reference-free objective.
+- `reference_free: true` is rejected by the supported TRL release because its
+  current DPO API no longer exposes the reference-free objective.
 
 Full-model DPO therefore needs memory for both policy and reference weights.
 LoRA is normally the practical choice for a single GPU.

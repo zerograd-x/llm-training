@@ -16,6 +16,8 @@ from .config import (
     EvaluationConfig,
     FreezeConfig,
     GradientCheckpointingConfig,
+    GRPOConfig,
+    GRPORewardConfig,
     LoRAConfig,
     LossConfig,
     OptimizerConfig,
@@ -107,14 +109,18 @@ class DataConfig:
     def __post_init__(self) -> None:
         if not self.train_file.strip():
             raise ValueError("data.train_file must be non-empty")
-        if self.format not in {"sft", "causal_lm", "dpo"}:
-            raise ValueError("data.format must be one of: sft, causal_lm, dpo")
+        if self.format not in {"sft", "causal_lm", "dpo", "grpo"}:
+            raise ValueError(
+                "data.format must be one of: sft, causal_lm, dpo, grpo"
+            )
         if self.max_sequence_length <= 0:
             raise ValueError("data.max_sequence_length must be > 0")
         if self.format == "sft":
             required = (self.prompt_field, self.completion_field)
         elif self.format == "dpo":
             required = (self.prompt_field, self.chosen_field, self.rejected_field)
+        elif self.format == "grpo":
+            required = (self.prompt_field,)
         else:
             required = (self.text_field,)
         if any(not name.strip() for name in required):
@@ -137,6 +143,7 @@ class TrainingJobConfig:
     training: TrainingConfig
     artifacts: ArtifactConfig
     dpo: DPOConfig | None = None
+    grpo: GRPOConfig | None = None
 
 
 _TRAINING_SCALARS = {
@@ -174,7 +181,7 @@ def training_job_from_dict(value: Mapping[str, Any]) -> TrainingJobConfig:
     sections = {
         "model", "data", "training", "freeze", "lora", "trainable_tokens",
         "optimizer", "scheduler", "loss", "gradient_checkpointing",
-        "deepspeed", "checkpoint", "evaluation", "artifacts", "dpo",
+        "deepspeed", "checkpoint", "evaluation", "artifacts", "dpo", "grpo",
     }
     unknown = sorted(set(payload) - sections)
     if unknown:
@@ -256,6 +263,58 @@ def training_job_from_dict(value: Mapping[str, Any]) -> TrainingJobConfig:
             raise ValueError("The dpo section requires data.format='dpo'")
         dpo = None
 
+    raw_grpo = payload.get("grpo")
+    if data.format == "grpo":
+        grpo_payload = _mapping(raw_grpo, "grpo")
+        raw_rewards = grpo_payload.pop("rewards", None)
+        if not isinstance(raw_rewards, list):
+            raise ValueError("grpo.rewards must be a list")
+        rewards = tuple(
+            _strict_dataclass(GRPORewardConfig, item, f"grpo.rewards[{index}]")
+            for index, item in enumerate(raw_rewards)
+        )
+        grpo = _strict_dataclass(
+            GRPOConfig,
+            {**grpo_payload, "rewards": rewards},
+            "grpo",
+        )
+        grpo.validate()
+        if config.trainable_tokens is not None:
+            raise ValueError("GRPO does not support trainable_tokens yet")
+        if config.loss.module_path is not None or config.loss.kwargs:
+            raise ValueError("GRPO owns its loss; custom loss configuration is not supported")
+        if config.deepspeed is not None and (
+            config.deepspeed.optimizer is not None
+            or config.deepspeed.scheduler is not None
+        ):
+            raise ValueError(
+                "GRPO uses the Hugging Face optimizer and scheduler; "
+                "deepspeed.optimizer/deepspeed.scheduler are not supported"
+            )
+        if config.evaluation.every_epochs not in {None, 1}:
+            raise ValueError(
+                "GRPO supports evaluation.every_epochs only as 1; "
+                "use evaluation.every_steps for another cadence"
+            )
+        effective_generation_steps = (
+            grpo.steps_per_generation
+            if grpo.steps_per_generation is not None
+            else config.gradient_accumulation_steps
+        )
+        if (
+            config.per_device_batch_size * effective_generation_steps
+            % grpo.num_generations
+        ):
+            raise ValueError(
+                "training.per_device_batch_size * effective "
+                "steps_per_generation must be divisible by "
+                "grpo.num_generations"
+            )
+    else:
+        if raw_grpo is not None:
+            raise ValueError("The grpo section requires data.format='grpo'")
+        grpo = None
+
     artifacts = _strict_dataclass(ArtifactConfig, payload.get("artifacts"), "artifacts")
     if artifacts.save == "adapter" and config.lora is None and config.trainable_tokens is None:
         raise ValueError("artifacts.save='adapter' requires lora or trainable_tokens")
@@ -267,6 +326,7 @@ def training_job_from_dict(value: Mapping[str, Any]) -> TrainingJobConfig:
         training=config,
         artifacts=artifacts,
         dpo=dpo,
+        grpo=grpo,
     )
 
 

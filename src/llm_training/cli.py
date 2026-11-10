@@ -66,6 +66,8 @@ def validate_dataset(dataset: JsonlDataset, data: DataConfig) -> None:
             rejected = _require_text(row, data.rejected_field)
             if chosen == rejected:
                 raise ValueError("DPO chosen and rejected completions must differ")
+        elif data.format == "grpo":
+            _require_text(row, data.prompt_field)
         else:
             _require_text(row, data.text_field)
 
@@ -131,6 +133,18 @@ def run_job(
     train_dataset: JsonlDataset | None = None,
     eval_dataset: JsonlDataset | None = None,
 ):
+    if job.data.format == "grpo":
+        train_dataset = train_dataset or load_jsonl(job.data.train_file)
+        if eval_dataset is None and job.data.validation_file is not None:
+            eval_dataset = load_jsonl(job.data.validation_file)
+        from .grpo import run_grpo_job
+
+        return run_grpo_job(
+            job,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+        )
+
     if job.data.format == "dpo":
         train_dataset = train_dataset or load_jsonl(job.data.train_file)
         if eval_dataset is None and job.data.validation_file is not None:
@@ -200,7 +214,11 @@ def main(argv: list[str] | None = None) -> int:
             max_sequence_length=(
                 job.dpo.max_length
                 if job.dpo is not None
-                else job.data.max_sequence_length
+                else (
+                    job.grpo.max_completion_length
+                    if job.grpo is not None
+                    else job.data.max_sequence_length
+                )
             ),
             has_eval_data=eval_dataset is not None,
         )

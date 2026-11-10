@@ -27,8 +27,16 @@ deepspeed = [
   "deepspeed>=0.14.5,<1",
 ]
 dpo = [
-  "datasets>=3,<5",
-  "trl>=0.23,<0.24",
+  "datasets>=4,<5",
+  "trl>=1.12,<1.13",
+]
+grpo = [
+  "datasets>=4,<5",
+  "trl>=1.12,<1.13",
+]
+rl = [
+  "datasets>=4,<5",
+  "trl>=1.12,<1.13",
 ]
 dev = [
   "pytest>=8,<9",

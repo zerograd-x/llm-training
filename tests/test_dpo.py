@@ -7,6 +7,7 @@ import pytest
 
 from llm_training.config_file import training_job_from_dict
 from llm_training.dpo import (
+    _build_trl_dpo_config,
     _load_trl_dpo_classes,
     dpo_deepspeed_config,
     dpo_training_arguments,
@@ -95,6 +96,13 @@ def test_dpo_training_arguments_preserve_final_only_checkpoint():
     assert args["bf16"] is True
 
 
+def test_dpo_maps_warmup_ratio_to_transformers_5_warmup_steps():
+    job = dpo_job(scheduler={"name": "cosine", "warmup_ratio": 0.1})
+
+    assert dpo_training_arguments(job)["warmup_steps"] == 0.1
+    assert "warmup_ratio" not in dpo_training_arguments(job)
+
+
 def test_dpo_deepspeed_translation_leaves_optimizer_to_hf():
     job = dpo_job(
         deepspeed={
@@ -150,3 +158,28 @@ def test_trl_023_import_isolates_unused_callback_dependencies(monkeypatch):
     assert trainer_cls is FakeDPOTrainer
     assert sys.modules["trl.mergekit_utils"] is old_mergekit
     assert sys.modules["trl.trainer.judges"] is old_judges
+
+
+def test_new_trl_dpo_config_compatibility():
+    class CurrentDPOConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    config = _build_trl_dpo_config(
+        CurrentDPOConfig,
+        {
+            "beta": 0.1,
+            "max_length": 128,
+            "max_prompt_length": 64,
+            "reference_free": False,
+        },
+    )
+
+    assert config.kwargs == {"beta": 0.1, "max_length": 128}
+
+    with pytest.raises(ValueError, match="reference-free DPO"):
+        _build_trl_dpo_config(
+            CurrentDPOConfig,
+            {"max_length": 128, "reference_free": True},
+        )
+

@@ -10,7 +10,7 @@ import torch
 from torch import distributed as dist
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from test_training_boundaries import ToyLM, collate, rows
+from training_test_support import ToyLM, collate, rows
 from test_evaluation import TokenAccuracy
 from llm_training import EvaluationConfig, Trainer, TrainingConfig
 from llm_training.loss import shift_causal_labels
@@ -78,3 +78,4 @@ def main(directory):
 
 if __name__ == "__main__":
     main(Path(sys.argv[1]))
+

@@ -273,6 +273,12 @@ def _build_trl_dpo_config(config_cls, kwargs: Mapping[str, Any]):
     if "max_prompt_length" not in supported:
         # Prompt truncation is applied in prepare_preference_rows for newer TRL.
         effective.pop("max_prompt_length", None)
+    if "reference_free" not in supported:
+        if effective.get("reference_free"):
+            raise ValueError(
+                "The supported TRL release does not expose reference-free DPO"
+            )
+        effective.pop("reference_free", None)
     return config_cls(**effective)
 
 def run_dpo_job(

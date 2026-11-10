@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 from typing import Any, Literal
 
 
@@ -149,6 +150,81 @@ class DPOConfig:
             raise ValueError("dpo.max_prompt_length must be <= dpo.max_length")
         if self.system_prompt is not None and not self.system_prompt.strip():
             raise ValueError("dpo.system_prompt must be non-empty when set")
+
+
+@dataclass(frozen=True)
+class GRPORewardConfig:
+    """One importable GRPO reward and its explicit aggregation behavior."""
+
+    module_path: str
+    weight: float = 1.0
+    kwargs: dict[str, Any] = field(default_factory=dict)
+    abstain: Literal["error", "zero"] = "error"
+
+    def validate(self) -> None:
+        if not self.module_path.strip() or "." not in self.module_path:
+            raise ValueError("grpo.rewards.module_path must be a dotted import path")
+        if not math.isfinite(self.weight):
+            raise ValueError("grpo.rewards.weight must be finite")
+        if self.abstain not in {"error", "zero"}:
+            raise ValueError("grpo.rewards.abstain must be one of: error, zero")
+
+
+@dataclass(frozen=True)
+class GRPOConfig:
+    """Group Relative Policy Optimization parameters owned by TRL."""
+
+    rewards: tuple[GRPORewardConfig, ...]
+    num_generations: int = 8
+    max_completion_length: int = 512
+    temperature: float = 1.0
+    top_p: float = 1.0
+    beta: float = 0.0
+    epsilon: float = 0.2
+    epsilon_high: float | None = None
+    loss_type: Literal["dapo", "grpo", "bnpo", "dr_grpo"] = "dapo"
+    scale_rewards: Literal["group", "batch", "none"] = "group"
+    num_iterations: int = 1
+    steps_per_generation: int | None = None
+    mask_truncated_completions: bool = False
+    system_prompt: str | None = None
+
+    def validate(self) -> None:
+        if not self.rewards:
+            raise ValueError("grpo.rewards must contain at least one reward")
+        for reward in self.rewards:
+            reward.validate()
+        paths = [reward.module_path for reward in self.rewards]
+        if len(paths) != len(set(paths)):
+            raise ValueError("grpo.rewards must not contain duplicate module paths")
+        if self.num_generations < 2:
+            raise ValueError("grpo.num_generations must be >= 2")
+        if self.max_completion_length <= 0:
+            raise ValueError("grpo.max_completion_length must be > 0")
+        if self.temperature <= 0:
+            raise ValueError("grpo.temperature must be > 0")
+        if not 0 < self.top_p <= 1:
+            raise ValueError("grpo.top_p must be in (0, 1]")
+        if self.beta < 0:
+            raise ValueError("grpo.beta must be >= 0")
+        if self.epsilon <= 0:
+            raise ValueError("grpo.epsilon must be > 0")
+        if self.epsilon_high is not None and self.epsilon_high <= 0:
+            raise ValueError("grpo.epsilon_high must be > 0 when set")
+        if self.loss_type not in {"dapo", "grpo", "bnpo", "dr_grpo"}:
+            raise ValueError(
+                "grpo.loss_type must be one of: dapo, grpo, bnpo, dr_grpo"
+            )
+        if self.scale_rewards not in {"group", "batch", "none"}:
+            raise ValueError(
+                "grpo.scale_rewards must be one of: group, batch, none"
+            )
+        if self.num_iterations <= 0:
+            raise ValueError("grpo.num_iterations must be > 0")
+        if self.steps_per_generation is not None and self.steps_per_generation <= 0:
+            raise ValueError("grpo.steps_per_generation must be > 0 when set")
+        if self.system_prompt is not None and not self.system_prompt.strip():
+            raise ValueError("grpo.system_prompt must be non-empty when set")
 
 
 @dataclass(frozen=True)

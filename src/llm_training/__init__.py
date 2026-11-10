@@ -26,6 +26,8 @@ from .config import (
     DPOConfig,
     FreezeConfig,
     GradientCheckpointingConfig,
+    GRPOConfig,
+    GRPORewardConfig,
     LoRAConfig,
     LossConfig,
     OptimizerConfig,
@@ -35,6 +37,7 @@ from .config import (
 )
 from .data import adapt_column_batch_collator, rows_to_column_batch
 from .dpo import dpo_deepspeed_config, dpo_training_arguments, prepare_preference_rows, run_dpo_job
+from .grpo import grpo_training_arguments, load_reward, prepare_prompt_rows, run_grpo_job
 from .distributed import (
     DistributedRuntime,
     MaterializationScope,
@@ -86,6 +89,8 @@ __all__ = [
     "FreezeConfig",
     "FreezeSummary",
     "GradientCheckpointingConfig",
+    "GRPOConfig",
+    "GRPORewardConfig",
     "IGNORE_INDEX",
     "LoRAConfig",
     "LossConfig",
@@ -117,7 +122,9 @@ __all__ = [
     "find_lm_head",
     "find_transformer_layers",
     "format_training_plan",
+    "grpo_training_arguments",
     "load_causal_lm",
+    "load_reward",
     "load_loss",
     "load_training_checkpoint",
     "merge_lora",
@@ -126,8 +133,10 @@ __all__ = [
     "resolve_run_identity",
     "resolve_trainable_token_ids",
     "prepare_preference_rows",
+    "prepare_prompt_rows",
     "rows_to_column_batch",
     "run_dpo_job",
+    "run_grpo_job",
     "run_training",
     "save_causal_lm",
     "save_lora_adapter",

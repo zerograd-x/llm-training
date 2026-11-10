@@ -1,6 +1,6 @@
 # Run training from YAML or JSON
 
-After installing the wheel, common SFT, causal-LM, and DPO jobs can be launched
+After installing the wheel, common SFT, causal-LM, DPO, and GRPO jobs can be launched
 without writing Python:
 
 ```bash
@@ -120,6 +120,17 @@ Install `llm-training[dpo]`, plus `peft` for LoRA. See
 [`dpo.md`](dpo.md) and
 [`examples/train_dpo.yaml`](../examples/train_dpo.yaml) for the complete
 schema, reference-model behavior, and multi-GPU launch command.
+
+## GRPO online reinforcement learning
+
+Set `data.format: grpo` and provide a prompt in each JSONL row. Additional
+columns are forwarded to configured reward functions. GRPO uses the same CLI
+and shared training sections, with rollout and reward controls under `grpo:`.
+
+Install `llm-training[grpo]`, plus `peft` for LoRA. See
+[`grpo.md`](grpo.md) and
+[`examples/train_grpo.yaml`](../examples/train_grpo.yaml) for reward plug-ins,
+generation-group validation, and multi-GPU launch commands.
 
 ## Partial and full fine-tuning
 

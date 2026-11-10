@@ -171,6 +171,79 @@ class GRPORewardConfig:
 
 
 @dataclass(frozen=True)
+class GRPORolloutConfig:
+    """Selects the GRPO generation engine and its vLLM runtime settings."""
+
+    backend: Literal["transformers", "vllm_colocate", "vllm_server"] = (
+        "transformers"
+    )
+    server_base_url: str | None = None
+    server_timeout: float = 240.0
+    gpu_memory_utilization: float = 0.3
+    max_model_length: int | None = None
+    tensor_parallel_size: int = 1
+    enable_sleep_mode: bool = False
+
+    def validate(self) -> None:
+        if self.backend not in {"transformers", "vllm_colocate", "vllm_server"}:
+            raise ValueError(
+                "grpo.rollout.backend must be one of: transformers, "
+                "vllm_colocate, vllm_server"
+            )
+        if self.server_base_url is not None:
+            if not self.server_base_url.strip():
+                raise ValueError(
+                    "grpo.rollout.server_base_url must be non-empty when set"
+                )
+            if self.backend != "vllm_server":
+                raise ValueError(
+                    "grpo.rollout.server_base_url requires backend=vllm_server"
+                )
+        if self.server_timeout <= 0:
+            raise ValueError("grpo.rollout.server_timeout must be > 0")
+        if not 0 < self.gpu_memory_utilization <= 1:
+            raise ValueError(
+                "grpo.rollout.gpu_memory_utilization must be in (0, 1]"
+            )
+        if self.max_model_length is not None and self.max_model_length <= 0:
+            raise ValueError(
+                "grpo.rollout.max_model_length must be > 0 when set"
+            )
+        if self.tensor_parallel_size <= 0:
+            raise ValueError("grpo.rollout.tensor_parallel_size must be > 0")
+        colocate_options_changed = (
+            self.gpu_memory_utilization != 0.3
+            or self.max_model_length is not None
+            or self.tensor_parallel_size != 1
+            or self.enable_sleep_mode
+        )
+        if self.backend != "vllm_colocate" and colocate_options_changed:
+            raise ValueError(
+                "grpo.rollout GPU engine settings require "
+                "backend=vllm_colocate; configure a server's engine when "
+                "launching that server"
+            )
+        if self.backend != "vllm_server" and self.server_timeout != 240.0:
+            raise ValueError(
+                "grpo.rollout.server_timeout requires backend=vllm_server"
+            )
+
+
+@dataclass(frozen=True)
+class GRPOConstraintConfig:
+    """Task-neutral constrained decoding passed to a vLLM rollout engine."""
+
+    pattern: str
+    kind: Literal["regex"] = "regex"
+
+    def validate(self) -> None:
+        if self.kind != "regex":
+            raise ValueError("grpo.constraint.kind must be: regex")
+        if not self.pattern:
+            raise ValueError("grpo.constraint.pattern must be non-empty")
+
+
+@dataclass(frozen=True)
 class GRPOConfig:
     """Group Relative Policy Optimization parameters owned by TRL."""
 
@@ -188,6 +261,8 @@ class GRPOConfig:
     steps_per_generation: int | None = None
     mask_truncated_completions: bool = False
     system_prompt: str | None = None
+    rollout: GRPORolloutConfig = field(default_factory=GRPORolloutConfig)
+    constraint: GRPOConstraintConfig | None = None
 
     def validate(self) -> None:
         if not self.rewards:
@@ -225,6 +300,14 @@ class GRPOConfig:
             raise ValueError("grpo.steps_per_generation must be > 0 when set")
         if self.system_prompt is not None and not self.system_prompt.strip():
             raise ValueError("grpo.system_prompt must be non-empty when set")
+        self.rollout.validate()
+        if self.constraint is not None:
+            self.constraint.validate()
+            if self.rollout.backend == "transformers":
+                raise ValueError(
+                    "grpo.constraint requires rollout.backend=vllm_colocate "
+                    "or vllm_server"
+                )
 
 
 @dataclass(frozen=True)

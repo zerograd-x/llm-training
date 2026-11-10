@@ -16,8 +16,10 @@ from .config import (
     EvaluationConfig,
     FreezeConfig,
     GradientCheckpointingConfig,
+    GRPOConstraintConfig,
     GRPOConfig,
     GRPORewardConfig,
+    GRPORolloutConfig,
     LoRAConfig,
     LossConfig,
     OptimizerConfig,
@@ -267,6 +269,21 @@ def training_job_from_dict(value: Mapping[str, Any]) -> TrainingJobConfig:
     if data.format == "grpo":
         grpo_payload = _mapping(raw_grpo, "grpo")
         raw_rewards = grpo_payload.pop("rewards", None)
+        rollout = _strict_dataclass(
+            GRPORolloutConfig,
+            grpo_payload.pop("rollout", None),
+            "grpo.rollout",
+        )
+        raw_constraint = grpo_payload.pop("constraint", None)
+        constraint = (
+            None
+            if raw_constraint is None
+            else _strict_dataclass(
+                GRPOConstraintConfig,
+                raw_constraint,
+                "grpo.constraint",
+            )
+        )
         if not isinstance(raw_rewards, list):
             raise ValueError("grpo.rewards must be a list")
         rewards = tuple(
@@ -275,7 +292,12 @@ def training_job_from_dict(value: Mapping[str, Any]) -> TrainingJobConfig:
         )
         grpo = _strict_dataclass(
             GRPOConfig,
-            {**grpo_payload, "rewards": rewards},
+            {
+                **grpo_payload,
+                "rewards": rewards,
+                "rollout": rollout,
+                "constraint": constraint,
+            },
             "grpo",
         )
         grpo.validate()

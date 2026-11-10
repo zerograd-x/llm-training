@@ -63,7 +63,132 @@ def test_grpo_config_and_training_arguments():
     assert args["eval_strategy"] == "epoch"
     assert args["reward_weights"] == [1.0]
     assert args["bf16"] is True
-    assert "use_vllm" not in args
+    assert args["use_vllm"] is False
+    assert "vllm_mode" not in args
+
+
+def test_grpo_maps_vllm_colocate_rollout():
+    job = grpo_job(
+        grpo={
+            "num_generations": 4,
+            "rewards": [{"module_path": "example_rewards.correctness"}],
+            "rollout": {
+                "backend": "vllm_colocate",
+                "gpu_memory_utilization": 0.45,
+                "max_model_length": 2048,
+                "tensor_parallel_size": 2,
+                "enable_sleep_mode": True,
+            },
+        }
+    )
+
+    args = grpo_training_arguments(job)
+
+    assert args["use_vllm"] is True
+    assert args["vllm_mode"] == "colocate"
+    assert args["vllm_gpu_memory_utilization"] == 0.45
+    assert args["vllm_max_model_length"] == 2048
+    assert args["vllm_tensor_parallel_size"] == 2
+    assert args["vllm_enable_sleep_mode"] is True
+    assert "vllm_server_base_url" not in args
+
+
+def test_grpo_maps_vllm_server_rollout():
+    job = grpo_job(
+        grpo={
+            "num_generations": 4,
+            "rewards": [{"module_path": "example_rewards.correctness"}],
+            "rollout": {
+                "backend": "vllm_server",
+                "server_base_url": "http://127.0.0.1:8000",
+                "server_timeout": 90,
+            },
+        }
+    )
+
+    args = grpo_training_arguments(job)
+
+    assert args["use_vllm"] is True
+    assert args["vllm_mode"] == "server"
+    assert args["vllm_server_base_url"] == "http://127.0.0.1:8000"
+    assert args["vllm_server_timeout"] == 90
+    assert "vllm_gpu_memory_utilization" not in args
+
+
+def test_grpo_maps_vllm_regex_constraint():
+    job = grpo_job(
+        grpo={
+            "num_generations": 4,
+            "rewards": [{"module_path": "example_rewards.correctness"}],
+            "rollout": {"backend": "vllm_colocate"},
+            "constraint": {"kind": "regex", "pattern": r"[0-9]+"},
+        }
+    )
+
+    assert grpo_training_arguments(job)["vllm_structured_outputs_regex"] == r"[0-9]+"
+
+
+def test_grpo_rejects_constraint_with_transformers_rollout():
+    with pytest.raises(ValueError, match="requires rollout.backend"):
+        grpo_job(
+            grpo={
+                "num_generations": 4,
+                "rewards": [{"module_path": "example_rewards.correctness"}],
+                "constraint": {"pattern": r"[0-9]+"},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "rollout, message",
+    [
+        ({"backend": "unknown"}, "backend must be one of"),
+        (
+            {
+                "backend": "vllm_colocate",
+                "server_base_url": "http://localhost:8000",
+            },
+            "requires backend=vllm_server",
+        ),
+        (
+            {"backend": "vllm_colocate", "gpu_memory_utilization": 0},
+            "must be in",
+        ),
+        (
+            {"backend": "vllm_colocate", "tensor_parallel_size": 0},
+            "must be > 0",
+        ),
+        (
+            {"backend": "vllm_server", "tensor_parallel_size": 2},
+            "GPU engine settings require backend=vllm_colocate",
+        ),
+        (
+            {"backend": "transformers", "server_timeout": 10},
+            "server_timeout requires backend=vllm_server",
+        ),
+    ],
+)
+def test_grpo_validates_rollout_settings(rollout, message):
+    with pytest.raises(ValueError, match=message):
+        grpo_job(
+            grpo={
+                "num_generations": 4,
+                "rewards": [{"module_path": "example_rewards.correctness"}],
+                "rollout": rollout,
+            }
+        )
+
+
+def test_grpo_rejects_unknown_constraint_fields():
+    with pytest.raises(ValueError, match="Unknown grpo.constraint fields"):
+        grpo_job(
+            grpo={
+                "num_generations": 4,
+                "rewards": [{"module_path": "example_rewards.correctness"}],
+                "rollout": {"backend": "vllm_server"},
+                "constraint": {"pattern": r"[0-9]+", "schema": {}},
+            }
+        )
 
 
 def test_grpo_maps_warmup_ratio_to_transformers_5_warmup_steps():
@@ -192,4 +317,3 @@ def test_grpo_section_is_exclusive_to_grpo_data():
                 "format": "sft",
             }
         )
-

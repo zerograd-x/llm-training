@@ -18,6 +18,8 @@ training:
   log_every_steps: 10
 
 grpo:
+  rollout:
+    backend: transformers
   num_generations: 8
   max_completion_length: 256
   temperature: 1.0

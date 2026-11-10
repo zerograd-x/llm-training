@@ -35,6 +35,18 @@ def _require_grpo_dependencies() -> None:
         )
 
 
+def _require_rollout_dependencies(job: TrainingJobConfig) -> None:
+    if (
+        job.grpo is not None
+        and job.grpo.rollout.backend != "transformers"
+        and importlib.util.find_spec("vllm") is None
+    ):
+        raise ImportError(
+            "vLLM rollouts require vllm. Install llm-training "
+            "with the 'grpo' and 'vllm' extras."
+        )
+
+
 def _require_text(row: Mapping[str, Any], field: str) -> str:
     value = row.get(field)
     if not isinstance(value, str) or not value:
@@ -241,7 +253,27 @@ def grpo_training_arguments(job: TrainingJobConfig) -> dict[str, Any]:
         "report_to": [],
         "remove_unused_columns": False,
         "deepspeed": dpo_deepspeed_config(job),
+        "use_vllm": grpo.rollout.backend != "transformers",
     }
+    if grpo.rollout.backend != "transformers":
+        rollout = grpo.rollout
+        if rollout.backend == "vllm_colocate":
+            kwargs.update(
+                vllm_mode="colocate",
+                vllm_gpu_memory_utilization=rollout.gpu_memory_utilization,
+                vllm_max_model_length=rollout.max_model_length,
+                vllm_tensor_parallel_size=rollout.tensor_parallel_size,
+                vllm_enable_sleep_mode=rollout.enable_sleep_mode,
+            )
+        else:
+            kwargs.update(
+                vllm_mode="server",
+                vllm_server_timeout=rollout.server_timeout,
+            )
+            if rollout.server_base_url is not None:
+                kwargs["vllm_server_base_url"] = rollout.server_base_url
+        if grpo.constraint is not None:
+            kwargs["vllm_structured_outputs_regex"] = grpo.constraint.pattern
     if training.gradient_checkpointing.use_reentrant is not None:
         kwargs["gradient_checkpointing_kwargs"] = {
             "use_reentrant": training.gradient_checkpointing.use_reentrant
@@ -283,6 +315,7 @@ def run_grpo_job(
     if job.data.format != "grpo" or job.grpo is None:
         raise ValueError("run_grpo_job requires data.format='grpo'")
     _require_grpo_dependencies()
+    _require_rollout_dependencies(job)
 
     from datasets import Dataset
     from trl import GRPOConfig as TRLGRPOConfig
@@ -365,4 +398,3 @@ def run_grpo_job(
                     encoding="utf-8",
                 )
     return result
-

@@ -66,6 +66,13 @@ def test_grpo_config_and_training_arguments():
     assert "use_vllm" not in args
 
 
+def test_grpo_maps_warmup_ratio_to_transformers_5_warmup_steps():
+    job = grpo_job(scheduler={"name": "cosine", "warmup_ratio": 0.1})
+
+    assert grpo_training_arguments(job)["warmup_steps"] == 0.1
+    assert "warmup_ratio" not in grpo_training_arguments(job)
+
+
 def test_grpo_preserves_reward_metadata_and_maps_prompt_column():
     job = training_job_from_dict(
         {
@@ -185,3 +192,4 @@ def test_grpo_section_is_exclusive_to_grpo_data():
                 "format": "sft",
             }
         )
+

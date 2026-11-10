@@ -63,7 +63,7 @@ def test_grpo_config_and_training_arguments():
     assert args["eval_strategy"] == "epoch"
     assert args["reward_weights"] == [1.0]
     assert args["bf16"] is True
-    assert args["use_vllm"] if "use_vllm" in args else False is False
+    assert "use_vllm" not in args
 
 
 def test_grpo_preserves_reward_metadata_and_maps_prompt_column():

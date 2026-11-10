@@ -24,7 +24,8 @@ The core runtime supports:
 - LoRA and TrainableTokens
 - custom causal-LM losses
 - TRL-backed Direct Preference Optimization (DPO)
-- TRL-backed Group Relative Policy Optimization (GRPO)
+- TRL-backed Group Relative Policy Optimization (GRPO), including
+  Transformers and vLLM rollout backends
 - AdamW + Hugging Face schedulers
 - gradient checkpointing
 - DeepSpeed ZeRO-1/2/3
@@ -52,6 +53,7 @@ pip install -e ".[peft]"
 pip install -e ".[deepspeed]"
 pip install -e ".[dpo,peft]"
 pip install -e ".[grpo,peft]"
+pip install -e ".[grpo,vllm]"
 ```
 
 For SFT data preparation and the high-level local training API:
@@ -238,6 +240,7 @@ Long-lived documentation is intentionally small:
 - [`training.md`](docs/training.md) — training entry points, effective plans, run identity, and artifact lifecycle
 - [`deepspeed.md`](docs/deepspeed.md) — optimizer/scheduler ownership, step semantics, ZeRO, offload, and clipping
 - [`dpo.md`](docs/dpo.md) — preference data, DPO parameters, reference policy, LoRA, and multi-GPU launch
+- [`grpo.md`](docs/grpo.md) — rewards, rollout backends, constrained decoding, LoRA, and multi-GPU launch
 - [`distributed-runtime.md`](docs/distributed-runtime.md) — distributed runtime contracts
 - [`evaluation.md`](docs/evaluation.md) — validation behavior and metrics
 - [`peft.md`](docs/peft.md) — LoRA and PEFT behavior

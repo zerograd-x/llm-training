@@ -6,9 +6,8 @@
 package's model loading, LoRA/freeze policy, precision, DeepSpeed, checkpoint,
 evaluation, and artifact settings.
 
-This first version intentionally provides a task-neutral GRPO core. Domain
-constraints, task-specific rollout engines, remote reward services, and
-application orchestration remain outside the package.
+The GRPO surface remains task-neutral. Domain-specific constraints, remote
+reward services, and application orchestration remain outside the package.
 
 ## Install
 
@@ -22,6 +21,12 @@ For LoRA:
 
 ```bash
 pip install "llm-training[grpo,peft]"
+```
+
+Add the vLLM integration for either vLLM rollout backend:
+
+```bash
+pip install "llm-training[grpo,vllm]"
 ```
 
 Add DeepSpeed when using ZeRO:
@@ -63,6 +68,8 @@ A complete LoRA example is in
 
 ```yaml
 grpo:
+  rollout:
+    backend: transformers
   num_generations: 8
   max_completion_length: 256
   temperature: 1.0
@@ -91,6 +98,65 @@ The effective number of generated rows per device is
 
 The supported loss normalization modes are `dapo`, `grpo`, `bnpo`, and
 `dr_grpo`. Reward scaling may be `group`, `batch`, or `none`.
+
+## Rollout backends
+
+`grpo.rollout.backend` has three explicit values:
+
+| Backend | Behavior |
+| --- | --- |
+| `transformers` | Uses the policy model's Transformers generation path. This is the default. |
+| `vllm_colocate` | Runs vLLM in the training process and shares the training GPU resources. |
+| `vllm_server` | Connects the trainer to a separately launched vLLM server. |
+
+Colocated vLLM example:
+
+```yaml
+grpo:
+  rollout:
+    backend: vllm_colocate
+    gpu_memory_utilization: 0.3
+    max_model_length: 4096
+    tensor_parallel_size: 1
+    enable_sleep_mode: true
+```
+
+Server example:
+
+```yaml
+grpo:
+  rollout:
+    backend: vllm_server
+    server_base_url: http://127.0.0.1:8000
+    server_timeout: 240
+```
+
+The server is a separate process and must be running before training starts.
+Its GPUs must not overlap with the trainer's GPUs. `server_base_url` is
+optional; when omitted, TRL's server defaults are used. GPU memory, model
+length, tensor parallelism, and sleep mode are configured when launching the
+server; the matching `rollout` fields apply only to `vllm_colocate`.
+
+## Constrained decoding
+
+vLLM rollouts support task-neutral regex constrained decoding through the
+same config file:
+
+```yaml
+grpo:
+  rollout:
+    backend: vllm_colocate
+  constraint:
+    kind: regex
+    pattern: '[0-9]+'
+```
+
+The pattern is passed unchanged to TRL's vLLM structured-output integration.
+It constrains generated completions; it does not alter reward calculation or
+training labels. Constraints are rejected with the `transformers` backend so
+a config cannot appear valid while silently running unconstrained generation.
+The current public contract supports `kind: regex`; JSON Schema and grammar
+constraints are not accepted as aliases.
 
 ## Reward plug-ins
 
@@ -169,7 +235,7 @@ or adapter. A positive cadence enables intermediate TRL checkpoints and
 The final artifact includes `grpo_config.json`, tokenizer files, and an
 optional `system_prompt.txt`.
 
-## Scope of the first version
+## Scope
 
 Included:
 
@@ -181,8 +247,7 @@ Included:
 
 Deferred:
 
-- vLLM rollouts;
-- constrained or structured decoding;
+- JSON Schema or grammar constrained decoding;
 - token-level credit assignment and auxiliary losses;
 - dynamic resampling;
 - remote reward-model execution;

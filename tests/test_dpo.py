@@ -96,6 +96,13 @@ def test_dpo_training_arguments_preserve_final_only_checkpoint():
     assert args["bf16"] is True
 
 
+def test_dpo_maps_warmup_ratio_to_transformers_5_warmup_steps():
+    job = dpo_job(scheduler={"name": "cosine", "warmup_ratio": 0.1})
+
+    assert dpo_training_arguments(job)["warmup_steps"] == 0.1
+    assert "warmup_ratio" not in dpo_training_arguments(job)
+
+
 def test_dpo_deepspeed_translation_leaves_optimizer_to_hf():
     job = dpo_job(
         deepspeed={
@@ -175,3 +182,4 @@ def test_new_trl_dpo_config_compatibility():
             CurrentDPOConfig,
             {"max_length": 128, "reference_free": True},
         )
+

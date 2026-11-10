@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import importlib.util
+import inspect
 from importlib.metadata import version as package_version
 import json
 from pathlib import Path
@@ -21,7 +22,7 @@ from .model import load_causal_lm
 
 
 def _load_trl_dpo_classes():
-    """Import TRL 0.23 DPO classes without its unrelated optional callbacks.
+    """Import DPO classes, retaining a compatibility shim for legacy TRL 0.23.
 
     TRL 0.23 imports mergekit and llm-blender callback modules eagerly. Those
     packages are not used by DPOTrainer and may be absent or incompatible with
@@ -101,6 +102,7 @@ def prepare_preference_rows(
     *,
     tokenizer=None,
     system_prompt: str | None = None,
+    max_prompt_length: int | None = None,
 ) -> list[dict[str, str]]:
     """Normalize configurable JSONL columns to TRL's preference schema."""
 
@@ -129,6 +131,20 @@ def prepare_preference_rows(
                 tokenize=False,
                 add_generation_prompt=True,
             )
+        if max_prompt_length is not None:
+            if tokenizer is None:
+                raise ValueError(
+                    "A tokenizer is required when dpo.max_prompt_length is set"
+                )
+            prompt_ids = tokenizer(
+                prompt,
+                add_special_tokens=False,
+            )["input_ids"]
+            if len(prompt_ids) > max_prompt_length:
+                prompt = tokenizer.decode(
+                    prompt_ids[-max_prompt_length:],
+                    skip_special_tokens=False,
+                )
         prepared.append(
             {"prompt": prompt, "chosen": chosen, "rejected": rejected}
         )
@@ -248,6 +264,17 @@ def dpo_training_arguments(job: TrainingJobConfig) -> dict[str, Any]:
     return kwargs
 
 
+
+def _build_trl_dpo_config(config_cls, kwargs: Mapping[str, Any]):
+    """Construct a DPO config across the supported TRL API transition."""
+
+    supported = inspect.signature(config_cls).parameters
+    effective = dict(kwargs)
+    if "max_prompt_length" not in supported:
+        # Prompt truncation is applied in prepare_preference_rows for newer TRL.
+        effective.pop("max_prompt_length", None)
+    return config_cls(**effective)
+
 def run_dpo_job(
     job: TrainingJobConfig,
     *,
@@ -302,6 +329,7 @@ def run_dpo_job(
         job.data,
         tokenizer=components.tokenizer,
         system_prompt=job.dpo.system_prompt,
+        max_prompt_length=job.dpo.max_prompt_length,
     )
     eval_rows = (
         prepare_preference_rows(
@@ -309,16 +337,17 @@ def run_dpo_job(
             job.data,
             tokenizer=components.tokenizer,
             system_prompt=job.dpo.system_prompt,
+            max_prompt_length=job.dpo.max_prompt_length,
         )
         if eval_dataset is not None
         else None
     )
-    # TRL 0.23 writes into this mapping during construction. Some
-    # Transformers/PEFT combinations do not create it on the forwarded model.
+    # Some Transformers/PEFT combinations do not create this mapping on the
+    # forwarded model before TRL writes into it.
     if not hasattr(model, "warnings_issued"):
         model.warnings_issued = {}
 
-    args = TRLDPOConfig(**dpo_training_arguments(job))
+    args = _build_trl_dpo_config(TRLDPOConfig, dpo_training_arguments(job))
     trainer = DPOTrainer(
         model=model,
         ref_model=None,

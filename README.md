@@ -10,9 +10,9 @@ The project is intentionally split from [`llm-training-data`](https://github.com
 
 Dependency direction is one-way: `llm-training` may consume `llm-training-data`; `llm-training-data` must not depend on this package.
 
-To run SFT, causal-LM, or DPO jobs directly from YAML/JSON with the installed
+To run SFT, causal-LM, DPO, or GRPO jobs directly from YAML/JSON with the installed
 wheel, see [Config-driven training](docs/config-driven.md) and
-[Config-driven DPO](docs/dpo.md).
+[Config-driven DPO](docs/dpo.md), and [Config-driven GRPO](docs/grpo.md).
 
 ## Scope
 
@@ -24,6 +24,7 @@ The core runtime supports:
 - LoRA and TrainableTokens
 - custom causal-LM losses
 - TRL-backed Direct Preference Optimization (DPO)
+- TRL-backed Group Relative Policy Optimization (GRPO)
 - AdamW + Hugging Face schedulers
 - gradient checkpointing
 - DeepSpeed ZeRO-1/2/3
@@ -50,6 +51,7 @@ Optional features:
 pip install -e ".[peft]"
 pip install -e ".[deepspeed]"
 pip install -e ".[dpo,peft]"
+pip install -e ".[grpo,peft]"
 ```
 
 For SFT data preparation and the high-level local training API:

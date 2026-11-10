@@ -9,7 +9,7 @@ from torch.nn import functional as F
 
 from llm_training import EvaluationConfig, EvaluationMetric, Trainer, TrainingConfig
 from llm_training.loss import shift_causal_labels
-from test_training_boundaries import ToyLM, rows, collate
+from training_test_support import ToyLM, rows, collate
 
 
 class TokenAccuracy(EvaluationMetric):
@@ -97,3 +97,4 @@ def test_evaluation_error_restores_mode_and_rng(tmp_path):
     with pytest.raises(ValueError, match="no supervised tokens"):
         trainer.evaluate(bad)
     assert trainer.model.training and torch.equal(state, torch.get_rng_state())
+

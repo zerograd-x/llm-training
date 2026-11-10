@@ -1,0 +1,65 @@
+model:
+  name_or_path: Qwen/Qwen3.5-4B
+  dtype: bfloat16
+
+data:
+  train_file: data/grpo-prompts.jsonl
+  validation_file: data/grpo-validation.jsonl
+  format: grpo
+  prompt_field: prompt
+
+training:
+  output_dir: outputs/qwen35-grpo
+  num_epochs: 1
+  per_device_batch_size: 8
+  gradient_accumulation_steps: 1
+  mixed_precision: bf16
+  max_steps: 100
+  log_every_steps: 10
+
+grpo:
+  num_generations: 8
+  max_completion_length: 256
+  temperature: 1.0
+  top_p: 1.0
+  beta: 0.0
+  epsilon: 0.2
+  loss_type: dapo
+  scale_rewards: group
+  num_iterations: 1
+  mask_truncated_completions: true
+  rewards:
+    - module_path: llm_training.rewards.exact_match_reward
+      weight: 1.0
+      abstain: error
+      kwargs:
+        strip: true
+        case_sensitive: true
+
+optimizer:
+  learning_rate: 0.000001
+  weight_decay: 0.0
+
+scheduler:
+  name: cosine
+  warmup_ratio: 0.03
+
+gradient_checkpointing:
+  enabled: true
+  use_reentrant: false
+
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.0
+  target_last_n_layers: 8
+
+checkpoint:
+  save_every_steps: null
+  keep_last: 1
+
+evaluation:
+  every_epochs: 1
+
+artifacts:
+  save: adapter

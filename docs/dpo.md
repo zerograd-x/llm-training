@@ -126,7 +126,7 @@ The caller does not need to configure a second model path:
 - With LoRA, TRL evaluates the reference policy with the adapter disabled.
 - With full or selective base-model training, TRL creates a frozen copy of the
   initial policy.
-- With `reference_free: true`, TRL uses its reference-free objective.
+- `reference_free: true` is rejected by the supported TRL release because its\n  current DPO API no longer exposes the reference-free objective.
 
 Full-model DPO therefore needs memory for both policy and reference weights.
 LoRA is normally the practical choice for a single GPU.

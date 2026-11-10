@@ -238,10 +238,13 @@ def dpo_training_arguments(job: TrainingJobConfig) -> dict[str, Any]:
         kwargs["gradient_checkpointing_kwargs"] = {
             "use_reentrant": training.gradient_checkpointing.use_reentrant
         }
-    if training.scheduler.warmup_steps is None:
-        kwargs["warmup_ratio"] = training.scheduler.warmup_ratio
-    else:
-        kwargs["warmup_steps"] = training.scheduler.warmup_steps
+    # Transformers 5 represents both an absolute warmup count and a ratio
+    # through warmup_steps: values below 1 are interpreted as a ratio.
+    kwargs["warmup_steps"] = (
+        training.scheduler.warmup_ratio
+        if training.scheduler.warmup_steps is None
+        else training.scheduler.warmup_steps
+    )
 
     if has_eval and evaluation.every_steps is not None:
         kwargs.update(
@@ -383,3 +386,4 @@ def run_dpo_job(
                     encoding="utf-8",
                 )
     return result
+
